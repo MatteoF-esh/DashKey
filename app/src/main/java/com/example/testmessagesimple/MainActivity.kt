@@ -5,6 +5,7 @@ import android.util.Patterns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,6 +23,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
@@ -31,11 +34,130 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.room.Room
+import com.example.testmessagesimple.data.AuthRepository
+import com.example.testmessagesimple.data.UserInfo
 import com.example.testmessagesimple.ui.theme.TestMessageSimpleTheme
+import com.example.testmessagesimple.utils.TokenManager
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
 
-// --- Modèles de données ---
-data class User(val name: String, val email: String)
+// --- ViewModel ---
+class AuthViewModel(private val tokenManager: TokenManager) : ViewModel() {
+    private val authRepository = AuthRepository()
+
+    var currentUser by mutableStateOf<UserInfo?>(null)
+        private set
+
+    var isLoading by mutableStateOf(false)
+        private set
+
+    var errorMessage by mutableStateOf<String?>(null)
+        private set
+
+    // --- Brute Force Protection ---
+    private var failedAttempts = 0
+    private val maxFailedAttempts = 5
+    private val lockoutDurationSeconds = 30
+    var lockoutTimeRemaining by mutableStateOf(0)
+        private set
+    val isLockedOut: Boolean
+        get() = lockoutTimeRemaining > 0
+
+    init {
+        checkForSavedSession()
+        checkForActiveLockout()
+    }
+
+    private fun checkForSavedSession() {
+        val authData = tokenManager.getAuthData()
+        if (authData != null) {
+            currentUser = authData.second
+        }
+    }
+
+    private fun checkForActiveLockout() {
+        val lockoutUntil = tokenManager.getLockoutUntil()
+        val currentTime = System.currentTimeMillis()
+        if (lockoutUntil > currentTime) {
+            val remainingSeconds = TimeUnit.MILLISECONDS.toSeconds(lockoutUntil - currentTime).toInt()
+            startLockoutCountdown(remainingSeconds, "Trop de tentatives. Veuillez patienter $remainingSeconds secondes.")
+        }
+    }
+
+    private fun startLockoutCountdown(duration: Int, message: String) {
+        errorMessage = message
+        viewModelScope.launch {
+            lockoutTimeRemaining = duration
+            while (lockoutTimeRemaining > 0) {
+                delay(1000)
+                lockoutTimeRemaining--
+            }
+            errorMessage = null // Clear lockout message
+        }
+    }
+
+    private fun handleFailedAttempt() {
+        failedAttempts++
+        if (failedAttempts >= maxFailedAttempts) {
+            val lockoutUntil = System.currentTimeMillis() + (lockoutDurationSeconds * 1000)
+            tokenManager.saveLockoutUntil(lockoutUntil)
+            failedAttempts = 0 // Reset for the next cycle
+            startLockoutCountdown(lockoutDurationSeconds, "Trop de tentatives. Veuillez patienter $lockoutDurationSeconds secondes.")
+        }
+    }
+
+    fun login(email: String, password: String) {
+        if (isLockedOut) {
+            errorMessage = "Trop de tentatives. Veuillez patienter $lockoutTimeRemaining secondes."
+            return
+        }
+
+        viewModelScope.launch {
+            isLoading = true
+            errorMessage = null
+            val result = authRepository.login(email, password)
+            result.onSuccess {
+                tokenManager.saveAuthData(it.token, it.user)
+                tokenManager.clearLockout() // Clear lockout on success
+                currentUser = it.user
+                failedAttempts = 0 // Reset on success
+            }.onFailure {
+                errorMessage = it.message
+                handleFailedAttempt()
+            }
+            isLoading = false
+        }
+    }
+
+    fun register(email: String, password: String) {
+        if (isLockedOut) {
+            errorMessage = "Trop de tentatives. Veuillez patienter $lockoutTimeRemaining secondes."
+            return
+        }
+
+        viewModelScope.launch {
+            isLoading = true
+            errorMessage = null
+            val result = authRepository.register(email, password)
+            result.onSuccess {
+                tokenManager.saveAuthData(it.token, it.user)
+                tokenManager.clearLockout() // Clear lockout on success
+                currentUser = it.user
+                failedAttempts = 0 // Reset on success
+            }.onFailure {
+                errorMessage = it.message
+                handleFailedAttempt()
+            }
+            isLoading = false
+        }
+    }
+
+    fun logout() {
+        tokenManager.clearData()
+        currentUser = null
+    }
+}
 
 // --- Fonctions utilitaires ---
 fun getConversationId(user1: String, user2: String): String {
@@ -56,6 +178,10 @@ private lateinit var database: AppDatabase
 
 // --- Activité Principale ---
 class MainActivity : ComponentActivity() {
+    private val authViewModel: AuthViewModel by viewModels {
+        AuthViewModelFactory(TokenManager(applicationContext))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -68,7 +194,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             TestMessageSimpleTheme {
-                AppShell(database.appDao())
+                AppShell(database.appDao(), authViewModel)
             }
         }
     }
@@ -76,15 +202,25 @@ class MainActivity : ComponentActivity() {
 
 // --- Structure principale ---
 @Composable
-fun AppShell(dao: AppDao) {
+fun AppShell(dao: AppDao, viewModel: AuthViewModel) {
     val navController = rememberNavController()
     val screens = listOf(Screen.Friends, Screen.Profile)
-    var currentUser by remember { mutableStateOf<User?>(null) }
+    var showLogin by remember { mutableStateOf(true) }
 
-    if (currentUser == null) {
-        LoginScreen(onLogin = { email, name -> currentUser = User(name, email) })
+    if (viewModel.currentUser == null) {
+        if (showLogin) {
+            LoginScreen(
+                viewModel = viewModel,
+                onNavigateToRegister = { showLogin = false }
+            )
+        } else {
+            RegistrationScreen(
+                viewModel = viewModel,
+                onNavigateToLogin = { showLogin = true }
+            )
+        }
     } else {
-        val friendships by dao.getAllFriendships(currentUser!!.email).collectAsState(initial = emptyList())
+        val friendships by dao.getAllFriendships(viewModel.currentUser!!.email).collectAsState(initial = emptyList())
 
         Scaffold(
             topBar = {
@@ -105,10 +241,10 @@ fun AppShell(dao: AppDao) {
             AppNavHost(
                 navController = navController,
                 modifier = Modifier.padding(innerPadding),
-                currentUser = currentUser!!,
+                currentUser = viewModel.currentUser!!,
                 friendships = friendships,
                 appDao = dao,
-                onDeleteAccount = { currentUser = null }
+                onDeleteAccount = { viewModel.logout() }
             )
         }
     }
@@ -116,7 +252,7 @@ fun AppShell(dao: AppDao) {
 
 // --- Écran de Connexion ---
 @Composable
-fun LoginScreen(onLogin: (email: String, name: String) -> Unit) {
+fun LoginScreen(viewModel: AuthViewModel, onNavigateToRegister: () -> Unit) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var emailError by remember { mutableStateOf<String?>(null) }
@@ -130,21 +266,113 @@ fun LoginScreen(onLogin: (email: String, name: String) -> Unit) {
                 value = email, onValueChange = { email = it; emailError = null },
                 label = { Text("Adresse e-mail") }, isError = emailError != null,
                 modifier = Modifier.fillMaxWidth(),
-                supportingText = { if (emailError != null) Text(emailError!!, color = MaterialTheme.colorScheme.error) }
+                supportingText = { if (emailError != null) Text(emailError!!, color = MaterialTheme.colorScheme.error) },
+                readOnly = viewModel.isLockedOut
             )
             Spacer(modifier = Modifier.height(16.dp))
-            OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Mot de passe") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = password, onValueChange = { password = it },
+                label = { Text("Mot de passe") }, visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+                readOnly = viewModel.isLockedOut
+            )
             Spacer(modifier = Modifier.height(24.dp))
 
             Button(modifier = Modifier.fillMaxWidth(), onClick = {
                 if (!Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
                     emailError = "Format d'e-mail invalide."
                 } else {
-                    val name = email.split("@")[0].replaceFirstChar { it.uppercase() }
-                    onLogin(email, name)
+                    viewModel.login(email, password)
                 }
-            }) {
-                Text("Se connecter")
+            }, enabled = !viewModel.isLoading && !viewModel.isLockedOut) {
+                if (viewModel.isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                } else {
+                    Text("Se connecter")
+                }
+            }
+            viewModel.errorMessage?.let {
+                val message = if (viewModel.isLockedOut) {
+                    "Trop de tentatives. Veuillez patienter ${viewModel.lockoutTimeRemaining} secondes."
+                } else {
+                    it
+                }
+                Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+            }
+            TextButton(onClick = onNavigateToRegister, enabled = !viewModel.isLockedOut) {
+                Text("Pas de compte ? S'inscrire")
+            }
+        }
+    }
+}
+
+// --- Écran d'Inscription ---
+@Composable
+fun RegistrationScreen(viewModel: AuthViewModel, onNavigateToLogin: () -> Unit) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var emailError by remember { mutableStateOf<String?>(null) }
+    var passwordError by remember { mutableStateOf<String?>(null) }
+
+    Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Text("Créer un compte", style = MaterialTheme.typography.headlineLarge)
+            Spacer(modifier = Modifier.height(24.dp))
+
+            OutlinedTextField(
+                value = email, onValueChange = { email = it; emailError = null },
+                label = { Text("Adresse e-mail") }, isError = emailError != null,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = { if (emailError != null) Text(emailError!!, color = MaterialTheme.colorScheme.error) },
+                readOnly = viewModel.isLockedOut
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            OutlinedTextField(
+                value = password, onValueChange = { password = it; passwordError = null },
+                label = { Text("Mot de passe") }, visualTransformation = PasswordVisualTransformation(),
+                isError = passwordError != null,
+                modifier = Modifier.fillMaxWidth(),
+                readOnly = viewModel.isLockedOut
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            OutlinedTextField(
+                value = confirmPassword, onValueChange = { confirmPassword = it; passwordError = null },
+                label = { Text("Confirmer le mot de passe") }, visualTransformation = PasswordVisualTransformation(),
+                isError = passwordError != null,
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = { if (passwordError != null) Text(passwordError!!, color = MaterialTheme.colorScheme.error) },
+                readOnly = viewModel.isLockedOut
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(modifier = Modifier.fillMaxWidth(), onClick = {
+                if (!Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+                    emailError = "Format d'e-mail invalide."
+                } else if (password.length < 6) {
+                    passwordError = "Le mot de passe doit contenir au moins 6 caractères."
+                } else if (password != confirmPassword) {
+                    passwordError = "Les mots de passe ne correspondent pas."
+                } else {
+                    viewModel.register(email, password)
+                }
+            }, enabled = !viewModel.isLoading && !viewModel.isLockedOut) {
+                if (viewModel.isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                } else {
+                    Text("S'inscrire")
+                }
+            }
+            viewModel.errorMessage?.let {
+                val message = if (viewModel.isLockedOut) {
+                    "Trop de tentatives. Veuillez patienter ${viewModel.lockoutTimeRemaining} secondes."
+                } else {
+                    it
+                }
+                Text(message, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp))
+            }
+            TextButton(onClick = onNavigateToLogin, enabled = !viewModel.isLockedOut) {
+                Text("Déjà un compte ? Se connecter")
             }
         }
     }
@@ -154,7 +382,7 @@ fun LoginScreen(onLogin: (email: String, name: String) -> Unit) {
 // --- Navigation ---
 @Composable
 fun AppNavHost(
-    navController: NavHostController, modifier: Modifier, currentUser: User,
+    navController: NavHostController, modifier: Modifier, currentUser: UserInfo,
     friendships: List<Friendship>, appDao: AppDao, onDeleteAccount: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -196,8 +424,8 @@ fun AppNavHost(
     val onAddMessage: (String, String) -> Unit = { friendEmail, text ->
         coroutineScope.launch {
             val conversationId = getConversationId(currentUser.email, friendEmail)
-            val message = Message(text = text, sender = currentUser.email, conversationId = conversationId)
-            appDao.insertMessage(message)
+            val message = com.example.testmessagesimple.data.Message(id=0, senderId = currentUser.id, receiverId = 0, content = text, createdAt = "", sender=null, receiver = null)
+            //appDao.insertMessage(message)
         }
     }
 
@@ -227,7 +455,7 @@ fun AppNavHost(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FriendsScreen(
-    currentUser: User,
+    currentUser: UserInfo,
     friendships: List<Friendship>,
     onAddFriend: (String) -> String?,
     onUpdateFriendshipStatus: (Friendship, FriendshipStatus) -> Unit,
@@ -308,13 +536,13 @@ fun FriendsScreen(
 }
 
 @Composable
-fun ProfileScreen(user: User?, onDeleteAccount: () -> Unit, modifier: Modifier = Modifier) {
+fun ProfileScreen(user: UserInfo?, onDeleteAccount: () -> Unit, modifier: Modifier = Modifier) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Supprimer le compte") },
-            text = { Text("Toutes vos données locales seront effacées. Voulez-vous continuer ?") },
+            title = { Text("Se déconnecter") },
+            text = { Text("Voulez-vous vraiment vous déconnecter ?") },
             confirmButton = { TextButton(onClick = { onDeleteAccount(); showDeleteDialog = false }) { Text("Confirmer") } },
             dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("Annuler") } }
         )
@@ -323,13 +551,13 @@ fun ProfileScreen(user: User?, onDeleteAccount: () -> Unit, modifier: Modifier =
         if (user != null) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Nom: ${user.name}", style = MaterialTheme.typography.bodyLarge)
+                    Text("ID: ${user.id}", style = MaterialTheme.typography.bodyLarge)
                     Text("Email: ${user.email}", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 4.dp))
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
             Button(onClick = { showDeleteDialog = true }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
-                Text("Supprimer le compte local")
+                Text("Se déconnecter")
             }
         } else {
             Text("Déconnecté.")
@@ -339,8 +567,8 @@ fun ProfileScreen(user: User?, onDeleteAccount: () -> Unit, modifier: Modifier =
 
 @Composable
 fun MessagingScreen(
-    currentUser: User,
-    messages: List<Message>,
+    currentUser: UserInfo,
+    messages: List<com.example.testmessagesimple.Message>,
     onAddMessage: (String) -> Unit
 ) {
     var text by remember { mutableStateOf("") }
@@ -432,7 +660,7 @@ fun AcceptedFriendCard(email: String, onChat: () -> Unit, onRemove: () -> Unit) 
 }
 
 @Composable
-fun MessageBubble(message: Message, isFromMe: Boolean) {
+fun MessageBubble(message: com.example.testmessagesimple.Message, isFromMe: Boolean) {
     val backgroundColor = if (isFromMe) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
     Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = backgroundColor)) {
         Column(modifier = Modifier.padding(12.dp)) {

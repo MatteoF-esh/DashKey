@@ -6,7 +6,7 @@ import androidx.room.TypeConverters
 
 @Database(
     entities = [Friendship::class, Message::class],
-    version = 2, // Version incrémentée pour refléter les changements de schéma
+    version = 2, // Revenir à la version 2
     exportSchema = false
 )
 @TypeConverters(Converters::class)
