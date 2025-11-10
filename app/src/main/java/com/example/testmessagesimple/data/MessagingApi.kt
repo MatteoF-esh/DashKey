@@ -23,6 +23,13 @@ interface MessagingApi {
         @Header("Authorization") token: String
     ): Response<UserInfo>
 
+    // Rechercher un utilisateur par email
+    @GET("users/search")
+    suspend fun searchUserByEmail(
+        @Header("Authorization") token: String,
+        @Query("email") email: String
+    ): Response<UserInfo>
+
     // Historique messages
     @GET("messages")
     suspend fun getMessages(
@@ -48,16 +55,10 @@ interface MessagingApi {
     ): Response<FriendRequestResponse>
 
     // Récupérer toutes les demandes reçues
-    @GET("friends/requests/received")
+    @GET("friends/requests")
     suspend fun getReceivedFriendRequests(
         @Header("Authorization") token: String
-    ): Response<List<FriendRequestResponse>>
-
-    // Récupérer toutes les demandes envoyées
-    @GET("friends/requests/sent")
-    suspend fun getSentFriendRequests(
-        @Header("Authorization") token: String
-    ): Response<List<FriendRequestResponse>>
+    ): Response<FriendRequestsWrapper>
 
     // Accepter/Refuser une demande
     @PUT("friends/request/{requestId}")
@@ -71,7 +72,7 @@ interface MessagingApi {
     @GET("friends")
     suspend fun getFriends(
         @Header("Authorization") token: String
-    ): Response<List<FriendResponse>>
+    ): Response<FriendsWrapper>
 
     // Supprimer un ami
     @DELETE("friends/{friendId}")

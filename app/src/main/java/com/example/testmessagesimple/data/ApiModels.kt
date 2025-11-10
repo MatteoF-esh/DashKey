@@ -1,6 +1,5 @@
 package com.example.testmessagesimple.data
 
-import com.google.gson.annotations.SerializedName
 
 // ===== REQUÊTES =====
 
@@ -56,25 +55,42 @@ data class UserBasic(
 // ===== AMITIÉS =====
 
 data class FriendRequestRequest(
-    val receiverEmail: String
+    val receiverId: Int
 )
 
 data class FriendRequestResponse(
     val id: Int,
-    val senderId: Int,
-    val receiverId: Int,
-    val status: String, // "PENDING", "ACCEPTED", "DECLINED"
+    val senderId: Int? = null,
+    val receiverId: Int? = null,
+    val status: String, // "pending", "accepted", "declined"
     val createdAt: String,
+    val sender: UserBasic? = null,
+    val receiver: UserBasic? = null,
+    val message: String? = null // Pour le message de succès du serveur
+)
+
+data class FriendRequestsWrapper(
+    val requests: List<FriendRequestItemResponse>
+)
+
+data class FriendRequestItemResponse(
+    val id: Int,
     val sender: UserBasic,
-    val receiver: UserBasic
+    val status: String,
+    val createdAt: String
 )
 
 data class UpdateFriendRequestRequest(
-    val status: String // "ACCEPTED" ou "DECLINED"
+    val action: String // "accept" ou "decline"
 )
 
 data class FriendResponse(
-    val id: Int,
-    val email: String
+    val friendshipId: Int,
+    val friend: UserBasic,
+    val since: String
+)
+
+data class FriendsWrapper(
+    val friends: List<FriendResponse>
 )
 

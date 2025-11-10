@@ -439,14 +439,14 @@ fun FriendsScreen(
     var friendToDelete by remember { mutableStateOf<com.example.testmessagesimple.data.FriendResponse?>(null) }
 
     // Dialog de suppression
-    friendToDelete?.let { friend ->
+    friendToDelete?.let { friendResponse ->
         AlertDialog(
             onDismissRequest = { friendToDelete = null },
             title = { Text("Confirmer la suppression") },
-            text = { Text("Voulez-vous vraiment supprimer ${friend.email} ?") },
+            text = { Text("Voulez-vous vraiment supprimer ${friendResponse.friend.email} ?") },
             confirmButton = {
                 TextButton(onClick = {
-                    friendshipViewModel.deleteFriend(friend.id)
+                    friendshipViewModel.deleteFriend(friendResponse.friendshipId)
                     friendToDelete = null
                 }) { Text("Confirmer") }
             },
@@ -457,7 +457,19 @@ fun FriendsScreen(
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Text("Ajouter un ami", style = MaterialTheme.typography.headlineSmall)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Ajouter un ami", style = MaterialTheme.typography.headlineSmall)
+            Button(
+                onClick = { friendshipViewModel.refresh() },
+                modifier = Modifier.padding(start = 8.dp)
+            ) {
+                Text("Rafraîchir")
+            }
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -483,15 +495,21 @@ fun FriendsScreen(
                         currentUser.email.equals(email, ignoreCase = true) ->
                             emailError = "Vous ne pouvez pas vous ajouter."
                         else -> {
-                            friendshipViewModel.sendFriendRequest(email) {
+                            emailError = null
+                            friendshipViewModel.sendFriendRequestByEmail(email) {
                                 email = ""
                             }
                         }
                     }
                 },
-                modifier = Modifier.padding(start = 8.dp)
+                modifier = Modifier.padding(start = 8.dp),
+                enabled = !friendshipViewModel.isLoading
             ) {
-                Text("Ajouter")
+                if (friendshipViewModel.isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                } else {
+                    Text("Ajouter")
+                }
             }
         }
 
@@ -504,31 +522,69 @@ fun FriendsScreen(
             )
         }
 
-        // Demandes reçues
-        if (friendshipViewModel.receivedRequests.isNotEmpty()) {
-            Text(
-                "Demandes reçues (${friendshipViewModel.receivedRequests.size})",
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.padding(top = 24.dp)
-            )
+        // Demandes reçues - TOUJOURS afficher cette section
+        Text(
+            "Demandes reçues (${friendshipViewModel.receivedRequests.size})",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.padding(top = 24.dp)
+        )
+
+        if (friendshipViewModel.receivedRequests.isEmpty()) {
+            // Message quand il n'y a pas de demandes
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Text(
+                    "Aucune demande d'ami en attente",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(16.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            // Liste des demandes
             LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
                 items(friendshipViewModel.receivedRequests) { request ->
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                    ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text(
                                 "Demande de: ${request.sender.email}",
-                                style = MaterialTheme.typography.bodyLarge
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            )
+                            Text(
+                                "Reçu le: ${request.createdAt}",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(top = 4.dp)
                             )
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                                 horizontalArrangement = Arrangement.End
                             ) {
-                                Button(onClick = { friendshipViewModel.declineRequest(request.id) }) {
+                                Button(
+                                    onClick = {
+                                        println("DEBUG UI: Refus de la demande ${request.id}")
+                                        friendshipViewModel.declineRequest(request.id)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error
+                                    )
+                                ) {
                                     Text("Refuser")
                                 }
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Button(
-                                    onClick = { friendshipViewModel.acceptRequest(request.id) },
-                                    modifier = Modifier.padding(start = 8.dp)
+                                    onClick = {
+                                        println("DEBUG UI: Acceptation de la demande ${request.id}")
+                                        friendshipViewModel.acceptRequest(request.id)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    )
                                 ) {
                                     Text("Accepter")
                                 }
@@ -546,32 +602,12 @@ fun FriendsScreen(
             modifier = Modifier.padding(top = 24.dp)
         )
         LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
-            items(friendshipViewModel.friends) { friend ->
+            items(friendshipViewModel.friends) { friendResponse ->
                 AcceptedFriendCard(
-                    email = friend.email,
-                    onChat = { navController.navigate("messaging/${friend.email}") },
-                    onRemove = { friendToDelete = friend }
+                    email = friendResponse.friend.email,
+                    onChat = { navController.navigate("messaging/${friendResponse.friend.email}") },
+                    onRemove = { friendToDelete = friendResponse }
                 )
-            }
-        }
-
-        // Demandes envoyées
-        if (friendshipViewModel.sentRequests.isNotEmpty()) {
-            Text(
-                "Demandes envoyées (${friendshipViewModel.sentRequests.size})",
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.padding(top = 24.dp)
-            )
-            LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
-                items(friendshipViewModel.sentRequests) { request ->
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                        Text(
-                            text = "Demande envoyée à ${request.receiver.email}",
-                            modifier = Modifier.padding(16.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
             }
         }
     }
