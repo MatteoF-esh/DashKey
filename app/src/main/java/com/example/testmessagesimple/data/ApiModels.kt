@@ -52,3 +52,29 @@ data class UserBasic(
     val id: Int,
     val email: String
 )
+
+// ===== AMITIÉS =====
+
+data class FriendRequestRequest(
+    val receiverEmail: String
+)
+
+data class FriendRequestResponse(
+    val id: Int,
+    val senderId: Int,
+    val receiverId: Int,
+    val status: String, // "PENDING", "ACCEPTED", "DECLINED"
+    val createdAt: String,
+    val sender: UserBasic,
+    val receiver: UserBasic
+)
+
+data class UpdateFriendRequestRequest(
+    val status: String // "ACCEPTED" ou "DECLINED"
+)
+
+data class FriendResponse(
+    val id: Int,
+    val email: String
+)
+

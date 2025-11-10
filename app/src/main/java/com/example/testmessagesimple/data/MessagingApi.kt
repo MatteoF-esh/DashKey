@@ -37,4 +37,46 @@ interface MessagingApi {
         @Header("Authorization") token: String,
         @Body request: SendMessageRequest
     ): Response<Message>
+
+    // ===== ENDPOINTS AMITIÉS =====
+
+    // Envoyer une demande d'ami
+    @POST("friends/request")
+    suspend fun sendFriendRequest(
+        @Header("Authorization") token: String,
+        @Body request: FriendRequestRequest
+    ): Response<FriendRequestResponse>
+
+    // Récupérer toutes les demandes reçues
+    @GET("friends/requests/received")
+    suspend fun getReceivedFriendRequests(
+        @Header("Authorization") token: String
+    ): Response<List<FriendRequestResponse>>
+
+    // Récupérer toutes les demandes envoyées
+    @GET("friends/requests/sent")
+    suspend fun getSentFriendRequests(
+        @Header("Authorization") token: String
+    ): Response<List<FriendRequestResponse>>
+
+    // Accepter/Refuser une demande
+    @PUT("friends/request/{requestId}")
+    suspend fun updateFriendRequest(
+        @Header("Authorization") token: String,
+        @Path("requestId") requestId: Int,
+        @Body request: UpdateFriendRequestRequest
+    ): Response<FriendRequestResponse>
+
+    // Liste des amis acceptés
+    @GET("friends")
+    suspend fun getFriends(
+        @Header("Authorization") token: String
+    ): Response<List<FriendResponse>>
+
+    // Supprimer un ami
+    @DELETE("friends/{friendId}")
+    suspend fun deleteFriend(
+        @Header("Authorization") token: String,
+        @Path("friendId") friendId: Int
+    ): Response<Void>
 }

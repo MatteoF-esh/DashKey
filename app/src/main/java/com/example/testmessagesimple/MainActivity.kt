@@ -17,6 +17,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -206,6 +208,8 @@ fun AppShell(dao: AppDao, viewModel: AuthViewModel) {
     val navController = rememberNavController()
     val screens = listOf(Screen.Friends, Screen.Profile)
     var showLogin by remember { mutableStateOf(true) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val tokenManager = remember { TokenManager(context) }
 
     if (viewModel.currentUser == null) {
         if (showLogin) {
@@ -220,7 +224,8 @@ fun AppShell(dao: AppDao, viewModel: AuthViewModel) {
             )
         }
     } else {
-        val friendships by dao.getAllFriendships(viewModel.currentUser!!.email).collectAsState(initial = emptyList())
+        val token = tokenManager.getAuthData()?.first ?: ""
+        val friendshipViewModel = remember(token) { FriendshipViewModel(token) }
 
         Scaffold(
             topBar = {
@@ -231,7 +236,7 @@ fun AppShell(dao: AppDao, viewModel: AuthViewModel) {
                 val title = if (currentRoute?.startsWith("messaging/") == true) {
                     navBackStackEntry?.arguments?.getString("friendEmail") ?: "Conversation"
                 } else {
-                    "SecureMessage"
+                    "DashKey"
                 }
 
                 AppTopBar(title, canNavigateBack) { navController.navigateUp() }
@@ -242,7 +247,7 @@ fun AppShell(dao: AppDao, viewModel: AuthViewModel) {
                 navController = navController,
                 modifier = Modifier.padding(innerPadding),
                 currentUser = viewModel.currentUser!!,
-                friendships = friendships,
+                friendshipViewModel = friendshipViewModel,
                 appDao = dao,
                 onDeleteAccount = { viewModel.logout() }
             )
@@ -259,6 +264,8 @@ fun LoginScreen(viewModel: AuthViewModel, onNavigateToRegister: () -> Unit) {
 
     Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Text("DashKey", style = MaterialTheme.typography.displayMedium)
+            Spacer(modifier = Modifier.height(8.dp))
             Text("Connexion", style = MaterialTheme.typography.headlineLarge)
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -317,6 +324,8 @@ fun RegistrationScreen(viewModel: AuthViewModel, onNavigateToLogin: () -> Unit) 
 
     Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+            Text("DashKey", style = MaterialTheme.typography.displayMedium)
+            Spacer(modifier = Modifier.height(8.dp))
             Text("Créer un compte", style = MaterialTheme.typography.headlineLarge)
             Spacer(modifier = Modifier.height(24.dp))
 
@@ -383,43 +392,9 @@ fun RegistrationScreen(viewModel: AuthViewModel, onNavigateToLogin: () -> Unit) 
 @Composable
 fun AppNavHost(
     navController: NavHostController, modifier: Modifier, currentUser: UserInfo,
-    friendships: List<Friendship>, appDao: AppDao, onDeleteAccount: () -> Unit
+    friendshipViewModel: FriendshipViewModel, appDao: AppDao, onDeleteAccount: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
-
-    val onAddFriend: (String) -> String? = { friendEmail ->
-        when {
-            !Patterns.EMAIL_ADDRESS.matcher(friendEmail).matches() -> "Format d'e-mail invalide."
-            friendships.any { it.getOtherUser(currentUser.email) == friendEmail } -> "Cet utilisateur est déjà dans votre liste."
-            currentUser.email.equals(friendEmail, ignoreCase = true) -> "Vous ne pouvez pas vous ajouter vous-même."
-            else -> {
-                coroutineScope.launch {
-                    val users = listOf(currentUser.email, friendEmail).sorted()
-                    val friendship = Friendship(users[0], users[1], FriendshipStatus.PENDING, currentUser.email)
-                    appDao.insertFriendship(friendship)
-                }
-                null
-            }
-        }
-    }
-
-    val onUpdateFriendshipStatus: (Friendship, FriendshipStatus) -> Unit = { friendship, newStatus ->
-        coroutineScope.launch {
-            if (newStatus == FriendshipStatus.DECLINED) {
-                appDao.deleteFriendship(friendship.userOneEmail, friendship.userTwoEmail)
-            } else {
-                appDao.updateFriendship(friendship.copy(status = newStatus))
-            }
-        }
-    }
-
-    val onRemoveFriend: (Friendship) -> Unit = { friendship ->
-        coroutineScope.launch {
-            val conversationId = getConversationId(friendship.userOneEmail, friendship.userTwoEmail)
-            appDao.deleteMessagesForConversation(conversationId)
-            appDao.deleteFriendship(friendship.userOneEmail, friendship.userTwoEmail)
-        }
-    }
 
     val onAddMessage: (String, String) -> Unit = { friendEmail, text ->
         coroutineScope.launch {
@@ -442,7 +417,7 @@ fun AppNavHost(
         }
 
         composable(Screen.Friends.route) {
-            FriendsScreen(currentUser, friendships, onAddFriend, onUpdateFriendshipStatus, onRemoveFriend, navController)
+            FriendsScreen(currentUser, friendshipViewModel, navController)
         }
 
         composable(Screen.Profile.route) {
@@ -456,75 +431,142 @@ fun AppNavHost(
 @Composable
 fun FriendsScreen(
     currentUser: UserInfo,
-    friendships: List<Friendship>,
-    onAddFriend: (String) -> String?,
-    onUpdateFriendshipStatus: (Friendship, FriendshipStatus) -> Unit,
-    onRemoveFriend: (Friendship) -> Unit,
+    friendshipViewModel: FriendshipViewModel,
     navController: NavHostController
 ) {
     var email by remember { mutableStateOf("") }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var friendToDelete by remember { mutableStateOf<Friendship?>(null) }
+    var emailError by remember { mutableStateOf<String?>(null) }
+    var friendToDelete by remember { mutableStateOf<com.example.testmessagesimple.data.FriendResponse?>(null) }
 
-    val receivedRequests = friendships.filter { it.status == FriendshipStatus.PENDING && it.initiatorUserId != currentUser.email }
-    val sentRequests = friendships.filter { it.status == FriendshipStatus.PENDING && it.initiatorUserId == currentUser.email }
-    val acceptedFriends = friendships.filter { it.status == FriendshipStatus.ACCEPTED }
-
-    friendToDelete?.let {
+    // Dialog de suppression
+    friendToDelete?.let { friend ->
         AlertDialog(
             onDismissRequest = { friendToDelete = null },
             title = { Text("Confirmer la suppression") },
-            text = { Text("Voulez-vous vraiment supprimer cet ami ? Les messages seront aussi effacés.") },
-            confirmButton = { TextButton(onClick = { onRemoveFriend(it); friendToDelete = null }) { Text("Confirmer") } },
-            dismissButton = { TextButton(onClick = { friendToDelete = null }) { Text("Annuler") } }
+            text = { Text("Voulez-vous vraiment supprimer ${friend.email} ?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    friendshipViewModel.deleteFriend(friend.id)
+                    friendToDelete = null
+                }) { Text("Confirmer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { friendToDelete = null }) { Text("Annuler") }
+            }
         )
     }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Ajouter un ami", style = MaterialTheme.typography.headlineSmall)
-        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             OutlinedTextField(
-                value = email, onValueChange = { email = it; errorMessage = null },
-                label = { Text("E-mail de l'ami") }, modifier = Modifier.weight(1f),
-                isError = errorMessage != null,
-                supportingText = { if (errorMessage != null) Text(errorMessage!!, color = MaterialTheme.colorScheme.error) }
+                value = email,
+                onValueChange = { email = it; emailError = null; friendshipViewModel.clearError() },
+                label = { Text("E-mail de l'ami") },
+                modifier = Modifier.weight(1f),
+                isError = emailError != null,
+                supportingText = {
+                    if (emailError != null) {
+                        Text(emailError!!, color = MaterialTheme.colorScheme.error)
+                    }
+                }
             )
-            Button(onClick = { errorMessage = onAddFriend(email).also { if (it == null) email = "" } }, modifier = Modifier.padding(start = 8.dp)) {
+            Button(
+                onClick = {
+                    when {
+                        !Patterns.EMAIL_ADDRESS.matcher(email).matches() ->
+                            emailError = "Format d'e-mail invalide."
+                        currentUser.email.equals(email, ignoreCase = true) ->
+                            emailError = "Vous ne pouvez pas vous ajouter."
+                        else -> {
+                            friendshipViewModel.sendFriendRequest(email) {
+                                email = ""
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.padding(start = 8.dp)
+            ) {
                 Text("Ajouter")
             }
         }
 
-        if (receivedRequests.isNotEmpty()) {
-            Text("Demandes reçues (${receivedRequests.size})", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 24.dp))
+        // Afficher les erreurs API
+        friendshipViewModel.errorMessage?.let {
+            Text(
+                text = it,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+
+        // Demandes reçues
+        if (friendshipViewModel.receivedRequests.isNotEmpty()) {
+            Text(
+                "Demandes reçues (${friendshipViewModel.receivedRequests.size})",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.padding(top = 24.dp)
+            )
             LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
-                items(receivedRequests) { friendship ->
-                    FriendRequestCard(
-                        friendship = friendship,
-                        onAccept = { onUpdateFriendshipStatus(friendship, FriendshipStatus.ACCEPTED) },
-                        onDecline = { onUpdateFriendshipStatus(friendship, FriendshipStatus.DECLINED) }
-                    )
+                items(friendshipViewModel.receivedRequests) { request ->
+                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                "Demande de: ${request.sender.email}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Button(onClick = { friendshipViewModel.declineRequest(request.id) }) {
+                                    Text("Refuser")
+                                }
+                                Button(
+                                    onClick = { friendshipViewModel.acceptRequest(request.id) },
+                                    modifier = Modifier.padding(start = 8.dp)
+                                ) {
+                                    Text("Accepter")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        Text("Mes Amis (${acceptedFriends.size})", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 24.dp))
+        // Liste des amis
+        Text(
+            "Mes Amis (${friendshipViewModel.friends.size})",
+            style = MaterialTheme.typography.headlineSmall,
+            modifier = Modifier.padding(top = 24.dp)
+        )
         LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
-            items(acceptedFriends) { friendship ->
+            items(friendshipViewModel.friends) { friend ->
                 AcceptedFriendCard(
-                    email = friendship.getOtherUser(currentUser.email),
-                    onChat = { navController.navigate("messaging/${friendship.getOtherUser(currentUser.email)}") },
-                    onRemove = { friendToDelete = friendship }
+                    email = friend.email,
+                    onChat = { navController.navigate("messaging/${friend.email}") },
+                    onRemove = { friendToDelete = friend }
                 )
             }
         }
 
-        if (sentRequests.isNotEmpty()) {
-            Text("Demandes envoyées (${sentRequests.size})", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 24.dp))
+        // Demandes envoyées
+        if (friendshipViewModel.sentRequests.isNotEmpty()) {
+            Text(
+                "Demandes envoyées (${friendshipViewModel.sentRequests.size})",
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.padding(top = 24.dp)
+            )
             LazyColumn(modifier = Modifier.padding(top = 8.dp)) {
-                items(sentRequests) { friendship ->
+                items(friendshipViewModel.sentRequests) { request ->
                     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Text(
-                            text = "Demande envoyée à ${friendship.getOtherUser(currentUser.email)}",
+                            text = "Demande envoyée à ${request.receiver.email}",
                             modifier = Modifier.padding(16.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -633,18 +675,7 @@ fun AppNavigationBar(navController: NavHostController, screens: List<Screen>) {
     }
 }
 
-@Composable
-fun FriendRequestCard(friendship: Friendship, onAccept: () -> Unit, onDecline: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Demande de: ${friendship.initiatorUserId}", style = MaterialTheme.typography.bodyLarge)
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
-                Button(onClick = onDecline) { Text("Refuser") }
-                Button(onClick = onAccept, modifier = Modifier.padding(start = 8.dp)) { Text("Accepter") }
-            }
-        }
-    }
-}
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
