@@ -409,18 +409,28 @@ fun AppNavHost(
             val friendEmail = backStackEntry.arguments?.getString("friendEmail") ?: return@composable
             val friendId = backStackEntry.arguments?.getInt("friendId") ?: return@composable
 
-            val messagingViewModel = remember(friendId) { MessagingViewModel(token) }
-
-            // Charger les messages au démarrage
-            LaunchedEffect(friendId) {
-                messagingViewModel.loadMessages(friendId)
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val directMessagingViewModel = remember {
+                com.example.testmessagesimple.ui.DirectMessagingViewModel(context.applicationContext as android.app.Application)
             }
 
-            MessagingScreen(
+            // Connecter au service de messagerie Socket.IO
+            LaunchedEffect(Unit) {
+                directMessagingViewModel.connectMessaging(token, currentUser.id, currentUser.email)
+            }
+
+            // Déconnexion lors de la sortie
+            DisposableEffect(Unit) {
+                onDispose {
+                    directMessagingViewModel.disconnectMessaging()
+                }
+            }
+
+            DirectMessagingScreen(
                 currentUser = currentUser,
                 friendEmail = friendEmail,
                 friendId = friendId,
-                viewModel = messagingViewModel
+                viewModel = directMessagingViewModel
             )
         }
 
@@ -668,44 +678,102 @@ fun ProfileScreen(user: UserInfo?, onDeleteAccount: () -> Unit, modifier: Modifi
 }
 
 @Composable
-fun MessagingScreen(
+fun DirectMessagingScreen(
     currentUser: UserInfo,
     friendEmail: String,
     friendId: Int,
-    viewModel: MessagingViewModel
+    viewModel: com.example.testmessagesimple.ui.DirectMessagingViewModel
 ) {
     var text by remember { mutableStateOf("") }
+    // Utiliser le même format que DirectMessagingViewModel (basé sur les IDs)
+    val conversationId = remember(currentUser.id, friendId) {
+        val sorted = listOf(currentUser.id, friendId).sorted()
+        val id = "conv_${sorted[0]}_${sorted[1]}"
+        android.util.Log.d("DirectMessaging", "📋 ConversationId créé: $id (user ${currentUser.id} ↔ user $friendId)")
+        id
+    }
+    val isConnected by viewModel.isConnected.collectAsState()
+    val sendStatus by viewModel.sendStatus.collectAsState()
+
+    // Observer les messages depuis la base de données locale
+    val messages by remember(conversationId) {
+        database.appDao().getMessagesForConversation(conversationId)
+    }.collectAsState(initial = emptyList())
+
+    // Log pour déboguer l'affichage des messages
+    LaunchedEffect(messages.size) {
+        android.util.Log.d("DirectMessaging", "📬 Nombre de messages affichés: ${messages.size} (conversationId: $conversationId)")
+        if (messages.isNotEmpty()) {
+            android.util.Log.d("DirectMessaging", "   → Dernier message: \"${messages.lastOrNull()?.text?.take(30)}...\"")
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
-        // Afficher les erreurs si présentes
-        viewModel.errorMessage?.let { error ->
+        // Indicateur de connexion
+        if (!isConnected) {
             Card(
                 modifier = Modifier.fillMaxWidth().padding(8.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
             ) {
-                Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    modifier = Modifier.padding(12.dp)
-                )
-            }
-        }
-
-        LazyColumn(
-            modifier = Modifier.weight(1f).padding(8.dp),
-            reverseLayout = true
-        ) {
-            items(viewModel.messages.reversed()) { message ->
-                val isFromMe = message.senderId == currentUser.id
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                    horizontalArrangement = if (isFromMe) Arrangement.End else Arrangement.Start
+                    modifier = Modifier.padding(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    MessageBubbleApi(message, isFromMe, currentUser.email, friendEmail)
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Connexion au serveur...",
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
                 }
             }
         }
 
+        // Statut d'envoi
+        sendStatus?.let { status ->
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = when (status) {
+                        is com.example.testmessagesimple.ui.SendStatus.DeliveredDirect -> MaterialTheme.colorScheme.primaryContainer
+                        is com.example.testmessagesimple.ui.SendStatus.StoredOffline -> MaterialTheme.colorScheme.secondaryContainer
+                        is com.example.testmessagesimple.ui.SendStatus.Error -> MaterialTheme.colorScheme.errorContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    }
+                )
+            ) {
+                Text(
+                    text = when (status) {
+                        is com.example.testmessagesimple.ui.SendStatus.Sending -> "📤 Envoi..."
+                        is com.example.testmessagesimple.ui.SendStatus.DeliveredDirect -> "✅ Message livré"
+                        is com.example.testmessagesimple.ui.SendStatus.StoredOffline -> "💾 Destinataire hors ligne, message stocké"
+                        is com.example.testmessagesimple.ui.SendStatus.Error -> "❌ ${status.message}"
+                    },
+                    modifier = Modifier.padding(8.dp),
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        // Liste des messages depuis Room
+        LazyColumn(
+            modifier = Modifier.weight(1f).padding(8.dp),
+            reverseLayout = true
+        ) {
+            items(messages.reversed()) { message ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    horizontalArrangement = if (message.isSentByMe) Arrangement.End else Arrangement.Start
+                ) {
+                    MessageBubbleLocal(message, message.isSentByMe)
+                }
+            }
+        }
+
+        // Zone de saisie
         Row(
             modifier = Modifier.fillMaxWidth().padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -715,25 +783,53 @@ fun MessagingScreen(
                 onValueChange = { text = it },
                 label = { Text("Message...") },
                 modifier = Modifier.weight(1f),
-                enabled = !viewModel.isLoading
+                enabled = isConnected
             )
             Button(
                 onClick = {
                     if (text.isNotBlank()) {
-                        viewModel.sendMessage(friendId, text) {
-                            text = ""
-                        }
+                        viewModel.sendMessage(
+                            receiverId = friendId,
+                            receiverEmail = friendEmail,
+                            content = text,
+                            conversationId = conversationId
+                        )
+                        text = ""
                     }
                 },
                 modifier = Modifier.padding(start = 8.dp),
-                enabled = !viewModel.isLoading && text.isNotBlank()
+                enabled = isConnected && text.isNotBlank()
             ) {
-                if (viewModel.isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
-                } else {
-                    Text("Envoyer")
-                }
+                Text("Envoyer")
             }
+        }
+    }
+}
+
+// Bulle de message pour les messages locaux (depuis Room)
+@Composable
+fun MessageBubbleLocal(message: Message, isFromMe: Boolean) {
+    Card(
+        modifier = Modifier.padding(4.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isFromMe)
+                MaterialTheme.colorScheme.primaryContainer
+            else
+                MaterialTheme.colorScheme.secondaryContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                    .format(java.util.Date(message.timestamp)),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

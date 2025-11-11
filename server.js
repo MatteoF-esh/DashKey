@@ -392,11 +392,22 @@ app.post('/messages', authenticateJWT, async (req, res) => {
     const senderId = req.user.userId;
     const { receiverId, content } = req.body || {};
 
+    console.log(`[POST /messages] Requête reçue:`, {
+      senderId,
+      receiverId,
+      content,
+      contentType: typeof content,
+      contentLength: content ? content.length : 0,
+      body: req.body
+    });
+
     if (!receiverId || !content) {
+      console.log(`❌ Validation échouée: receiverId=${receiverId}, content=${content}`);
       return res.status(400).json({ error: 'bad_request', message: 'receiverId et content requis' });
     }
 
     if (typeof content !== 'string' || content.trim().length === 0) {
+      console.log(`❌ Validation échouée: contenu vide ou invalide`);
       return res.status(400).json({ error: 'bad_request', message: 'Le contenu ne peut pas être vide' });
     }
 
@@ -415,6 +426,12 @@ app.post('/messages', authenticateJWT, async (req, res) => {
       console.log(`📨 Livraison directe via Socket.IO (destinataire en ligne)`);
 
       const sender = await User.findByPk(senderId, { attributes: ['email'] });
+
+      if (!sender) {
+        console.error(`❌ Erreur: Sender ${senderId} introuvable dans la base de données!`);
+        return res.status(500).json({ error: 'internal_error', message: 'Erreur: expéditeur introuvable' });
+      }
+
       const messageData = {
         senderId,
         senderEmail: sender.email,
@@ -457,8 +474,9 @@ app.post('/messages', authenticateJWT, async (req, res) => {
       });
     }
   } catch (err) {
-    console.error('POST /messages failed:', err);
-    res.status(500).json({ error: 'internal_error' });
+    console.error('❌ POST /messages failed:', err.message);
+    console.error('Stack trace:', err.stack);
+    res.status(500).json({ error: 'internal_error', message: err.message });
   }
 });
 
@@ -732,13 +750,15 @@ app.delete('/friends/:id', authenticateJWT, async (req, res) => {
 // ============================================================================
 
 io.on('connection', (socket) => {
-  console.log('🔌 Socket connected:', socket.id);
+  console.log('\n🔌 New socket connection:', socket.id);
 
   socket.on('authenticate', async (data) => {
     try {
+      console.log(`\n🔐 [authenticate] Socket ${socket.id} attempting authentication...`);
       const { token } = data || {};
 
       if (!token) {
+        console.log(`   ❌ No token provided`);
         socket.emit('error', { message: 'Token manquant' });
         return;
       }
@@ -749,7 +769,8 @@ io.on('connection', (socket) => {
       socket.userId = userId;
       addUserSocket(userId, socket.id);
 
-      console.log(`✅ User ${userId} authenticated`);
+      console.log(`   ✅ User ${userId} authenticated on socket ${socket.id}`);
+      console.log(`   📊 User ${userId} now has ${userSockets.get(userId)?.size || 0} active connection(s)`);
       socket.emit('authenticated', { userId, message: 'Authentifié' });
 
       // Deliver pending offline messages
@@ -788,18 +809,24 @@ io.on('connection', (socket) => {
     try {
       const { receiverId, content } = data || {};
 
+      console.log(`\n📨 [send_message] Received from user ${socket.userId}`);
+      console.log(`   → receiverId: ${receiverId}, content: "${content?.substring(0, 50)}..."`);
+
       if (!socket.userId) {
+        console.log(`   ❌ Socket not authenticated`);
         socket.emit('error', { message: 'Non authentifié' });
         return;
       }
 
       if (!receiverId || !content || typeof content !== 'string' || content.trim().length === 0) {
+        console.log(`   ❌ Invalid data: receiverId or content missing`);
         socket.emit('error', { message: 'receiverId et content requis' });
         return;
       }
 
       const receiver = await User.findByPk(receiverId);
       if (!receiver) {
+        console.log(`   ❌ Receiver ${receiverId} not found in database`);
         socket.emit('error', { message: 'Destinataire introuvable' });
         return;
       }
@@ -815,16 +842,22 @@ io.on('connection', (socket) => {
       };
 
       // Check if receiver is online
+      console.log(`\n🔍 Checking if user ${receiverId} is online...`);
+      console.log(`   Current online users map:`, Array.from(userSockets.entries()).map(([id, sockets]) => `User ${id}: ${sockets.size} socket(s)`));
+
       const receiverSockets = getUserSockets(receiverId);
+      console.log(`   → User ${receiverId} has ${receiverSockets.size} socket(s) connected`);
 
       if (receiverSockets.size > 0) {
         // DIRECT DELIVERY - receiver is online
-        console.log(`📨 Direct delivery from ${socket.userId} to ${receiverId} (${receiverSockets.size} device(s))`);
+        console.log(`\n📨 ✅ DIRECT DELIVERY from ${socket.userId} to ${receiverId}`);
+        console.log(`   → Delivering to ${receiverSockets.size} device(s): [${Array.from(receiverSockets).join(', ')}]`);
 
         let deliveredCount = 0;
         receiverSockets.forEach(socketId => {
           io.to(socketId).emit('message', messageData);
           deliveredCount++;
+          console.log(`   ✓ Sent to socket ${socketId}`);
         });
 
         // Confirm to sender
@@ -835,10 +868,11 @@ io.on('connection', (socket) => {
           direct: true
         });
 
-        console.log(`✅ Message delivered directly to ${deliveredCount} device(s)`);
+        console.log(`   ✅ Message delivered directly to ${deliveredCount} device(s) - NOT STORED IN DB\n`);
       } else {
         // STORE FOR OFFLINE DELIVERY
-        console.log(`💾 Receiver ${receiverId} offline, storing message in DB`);
+        console.log(`\n💾 ❌ OFFLINE STORAGE: Receiver ${receiverId} is offline`);
+        console.log(`   → Storing message in database...`);
 
         const savedMessage = await Message.create({
           senderId: socket.userId,
@@ -856,7 +890,7 @@ io.on('connection', (socket) => {
           offline: true
         });
 
-        console.log(`💾 Message stored with ID ${savedMessage.id}`);
+        console.log(`   💾 Message stored with ID ${savedMessage.id}\n`);
       }
 
     } catch (err) {
@@ -866,12 +900,19 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    console.log(`\n👋 [disconnect] Socket ${socket.id} disconnected`);
     if (socket.userId) {
+      const beforeCount = userSockets.get(socket.userId)?.size || 0;
       removeUserSocket(socket.userId, socket.id);
-      console.log(`👋 User ${socket.userId} socket ${socket.id} disconnected`);
+      const afterCount = userSockets.get(socket.userId)?.size || 0;
+      console.log(`   → User ${socket.userId}: ${beforeCount} → ${afterCount} connection(s)`);
+      if (afterCount === 0) {
+        console.log(`   ❌ User ${socket.userId} is now OFFLINE`);
+      }
     } else {
-      console.log('👋 Anonymous socket disconnected:', socket.id);
+      console.log(`   → Anonymous socket (not authenticated)`);
     }
+    console.log('');
   });
 });
 
@@ -927,4 +968,3 @@ async function start() {
 }
 
 start();
-

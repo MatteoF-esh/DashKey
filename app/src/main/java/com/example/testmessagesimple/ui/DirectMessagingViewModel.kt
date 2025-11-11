@@ -139,6 +139,12 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
         val currentUserId = _currentUserId.value
         val currentUserEmail = _currentUserEmail.value
 
+        Log.d(TAG, "\n📨 [sendMessage] Tentative d'envoi de message")
+        Log.d(TAG, "   → From: User $currentUserId ($currentUserEmail)")
+        Log.d(TAG, "   → To: User $receiverId ($receiverEmail)")
+        Log.d(TAG, "   → ConversationId: $conversationId")
+        Log.d(TAG, "   → Content: \"${content.take(50)}...\"")
+
         if (currentUserId == null || currentUserEmail == null) {
             Log.e(TAG, "❌ Impossible d'envoyer : utilisateur non connecté")
             _sendStatus.value = SendStatus.Error("Utilisateur non connecté")
@@ -170,12 +176,13 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
                 )
 
                 dao.insertMessage(localMessage)
-                Log.d(TAG, "💾 Message stocké localement")
+                Log.d(TAG, "   ✅ Message stocké localement (conversationId: $conversationId)")
+                Log.d(TAG, "   → Message ID local: ${localMessage.id}")
 
                 // 2. Envoyer via Socket.IO
                 _sendStatus.value = SendStatus.Sending
                 messagingService.sendMessage(receiverId, content, tempId)
-                Log.d(TAG, "📤 Message envoyé via Socket.IO")
+                Log.d(TAG, "   📤 Message envoyé via Socket.IO (tempId: $tempId)")
 
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Erreur lors de l'envoi", e)
@@ -196,6 +203,13 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
                 // Créer l'ID de conversation (même format que pour l'envoi)
                 val conversationId = createConversationId(currentUserId, received.senderId)
 
+                Log.d(TAG, "\n📨 [handleReceivedMessage] Message reçu")
+                Log.d(TAG, "   → From: User ${received.senderId} (${received.senderEmail})")
+                Log.d(TAG, "   → To: User $currentUserId")
+                Log.d(TAG, "   → ConversationId: $conversationId")
+                Log.d(TAG, "   → Content: \"${received.content.take(50)}...\"")
+                Log.d(TAG, "   → Source: ${if (received.fromServer) "serveur (était offline)" else "livraison directe"}")
+
                 val message = Message(
                     senderId = received.senderId,
                     receiverId = currentUserId,
@@ -210,8 +224,7 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
 
                 dao.insertMessage(message)
 
-                val source = if (received.fromServer) "serveur (était offline)" else "livraison directe"
-                Log.d(TAG, "💾 Message reçu et stocké localement ($source)")
+                Log.d(TAG, "   ✅ Message stocké localement (conversationId: $conversationId)")
 
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Erreur lors du traitement du message reçu", e)
