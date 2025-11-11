@@ -80,7 +80,7 @@ const User = sequelize.define(
   }
 );
 
-// Definee Message model - ONLY for offline/pending messages
+// Define Message model - ONLY for offline/pending messages
 const Message = sequelize.define(
   'Message',
   {
