@@ -394,26 +394,34 @@ fun AppNavHost(
     navController: NavHostController, modifier: Modifier, currentUser: UserInfo,
     friendshipViewModel: FriendshipViewModel, appDao: AppDao, onDeleteAccount: () -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
-
-    val onAddMessage: (String, String) -> Unit = { friendEmail, text ->
-        coroutineScope.launch {
-            val conversationId = getConversationId(currentUser.email, friendEmail)
-            val message = com.example.testmessagesimple.data.Message(id=0, senderId = currentUser.id, receiverId = 0, content = text, createdAt = "", sender=null, receiver = null)
-            //appDao.insertMessage(message)
-        }
-    }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val tokenManager = remember { TokenManager(context) }
+    val token = tokenManager.getAuthData()?.first ?: ""
 
     NavHost(navController = navController, startDestination = Screen.Friends.route, modifier = modifier) {
         composable(
-            route = "messaging/{friendEmail}",
-            arguments = listOf(navArgument("friendEmail") { type = NavType.StringType })
+            route = "messaging/{friendEmail}/{friendId}",
+            arguments = listOf(
+                navArgument("friendEmail") { type = NavType.StringType },
+                navArgument("friendId") { type = NavType.IntType }
+            )
         ) { backStackEntry ->
             val friendEmail = backStackEntry.arguments?.getString("friendEmail") ?: return@composable
-            val conversationId = getConversationId(currentUser.email, friendEmail)
-            val messages by appDao.getMessagesForConversation(conversationId).collectAsState(initial = emptyList())
+            val friendId = backStackEntry.arguments?.getInt("friendId") ?: return@composable
 
-            MessagingScreen(currentUser, messages) { text -> onAddMessage(friendEmail, text) }
+            val messagingViewModel = remember(friendId) { MessagingViewModel(token) }
+
+            // Charger les messages au démarrage
+            LaunchedEffect(friendId) {
+                messagingViewModel.loadMessages(friendId)
+            }
+
+            MessagingScreen(
+                currentUser = currentUser,
+                friendEmail = friendEmail,
+                friendId = friendId,
+                viewModel = messagingViewModel
+            )
         }
 
         composable(Screen.Friends.route) {
@@ -437,6 +445,20 @@ fun FriendsScreen(
     var email by remember { mutableStateOf("") }
     var emailError by remember { mutableStateOf<String?>(null) }
     var friendToDelete by remember { mutableStateOf<com.example.testmessagesimple.data.FriendResponse?>(null) }
+
+    // Rafraîchir la liste d'amis quand l'écran devient visible
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                friendshipViewModel.refresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     // Dialog de suppression
     friendToDelete?.let { friendResponse ->
@@ -605,7 +627,9 @@ fun FriendsScreen(
             items(friendshipViewModel.friends) { friendResponse ->
                 AcceptedFriendCard(
                     email = friendResponse.friend.email,
-                    onChat = { navController.navigate("messaging/${friendResponse.friend.email}") },
+                    onChat = {
+                        navController.navigate("messaging/${friendResponse.friend.email}/${friendResponse.friend.id}")
+                    },
                     onRemove = { friendToDelete = friendResponse }
                 )
             }
@@ -646,27 +670,69 @@ fun ProfileScreen(user: UserInfo?, onDeleteAccount: () -> Unit, modifier: Modifi
 @Composable
 fun MessagingScreen(
     currentUser: UserInfo,
-    messages: List<com.example.testmessagesimple.Message>,
-    onAddMessage: (String) -> Unit
+    friendEmail: String,
+    friendId: Int,
+    viewModel: MessagingViewModel
 ) {
     var text by remember { mutableStateOf("") }
 
     Column(Modifier.fillMaxSize()) {
-        LazyColumn(modifier = Modifier.weight(1f).padding(8.dp), reverseLayout = true) {
-            items(messages.reversed()) { message ->
-                val isFromMe = message.sender == currentUser.email
+        // Afficher les erreurs si présentes
+        viewModel.errorMessage?.let { error ->
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+            ) {
+                Text(
+                    text = error,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier.weight(1f).padding(8.dp),
+            reverseLayout = true
+        ) {
+            items(viewModel.messages.reversed()) { message ->
+                val isFromMe = message.senderId == currentUser.id
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                     horizontalArrangement = if (isFromMe) Arrangement.End else Arrangement.Start
                 ) {
-                    MessageBubble(message, isFromMe)
+                    MessageBubbleApi(message, isFromMe, currentUser.email, friendEmail)
                 }
             }
         }
-        Row(modifier = Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(value = text, onValueChange = { text = it }, label = {Text("Message...")}, modifier = Modifier.weight(1f))
-            Button(onClick = { if (text.isNotBlank()) { onAddMessage(text); text = "" } }, modifier = Modifier.padding(start = 8.dp)) {
-                Text("Envoyer")
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("Message...") },
+                modifier = Modifier.weight(1f),
+                enabled = !viewModel.isLoading
+            )
+            Button(
+                onClick = {
+                    if (text.isNotBlank()) {
+                        viewModel.sendMessage(friendId, text) {
+                            text = ""
+                        }
+                    }
+                },
+                modifier = Modifier.padding(start = 8.dp),
+                enabled = !viewModel.isLoading && text.isNotBlank()
+            ) {
+                if (viewModel.isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                } else {
+                    Text("Envoyer")
+                }
             }
         }
     }
@@ -727,13 +793,13 @@ fun AcceptedFriendCard(email: String, onChat: () -> Unit, onRemove: () -> Unit) 
 }
 
 @Composable
-fun MessageBubble(message: com.example.testmessagesimple.Message, isFromMe: Boolean) {
+fun MessageBubble(message: Message, isFromMe: Boolean) {
     val backgroundColor = if (isFromMe) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
     Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = backgroundColor)) {
         Column(modifier = Modifier.padding(12.dp)) {
             // Affiche "Moi" ou l'email de l'expéditeur
             Text(
-                text = if (isFromMe) "Moi" else message.sender,
+                text = if (isFromMe) "Moi" else message.senderEmail,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(bottom = 4.dp)
@@ -742,3 +808,21 @@ fun MessageBubble(message: com.example.testmessagesimple.Message, isFromMe: Bool
         }
     }
 }
+
+@Composable
+fun MessageBubbleApi(message: com.example.testmessagesimple.data.Message, isFromMe: Boolean, currentUserEmail: String, friendEmail: String) {
+    val backgroundColor = if (isFromMe) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = backgroundColor)) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            // Affiche "Moi" ou l'email de l'ami
+            Text(
+                text = if (isFromMe) "Moi" else friendEmail,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+            Text(message.content)
+        }
+    }
+}
+

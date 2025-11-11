@@ -28,11 +28,12 @@ class FriendshipViewModel(private val token: String) : ViewModel() {
 
     init {
         loadAllData()
-        // Rafraîchir automatiquement toutes les 5 secondes
+        // Rafraîchir automatiquement toutes les 10 secondes (pour détecter les suppressions)
         viewModelScope.launch {
             while (true) {
-                delay(5000)
+                delay(10000)
                 loadReceivedRequests()
+                loadFriends() // Ajouter aussi le rafraîchissement des amis
             }
         }
     }

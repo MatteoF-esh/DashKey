@@ -6,7 +6,7 @@ import androidx.room.TypeConverters
 
 @Database(
     entities = [Friendship::class, Message::class],
-    version = 2, // Revenir à la version 2
+    version = 3, // Version 3 : nouveaux champs dans Message pour stockage local
     exportSchema = false
 )
 @TypeConverters(Converters::class)
