@@ -928,7 +928,7 @@ async function start() {
       console.log(`🔐 JWT authentication enabled`);
     });
   } catch (err) {
-    console.error('Failed to start server:', err);
+    console.error('Faiiled to start server:', err);
     process.exit(1);
   }
 }
