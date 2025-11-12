@@ -1,0 +1,4 @@
+package Crypto
+
+class SignalManager {
+}
