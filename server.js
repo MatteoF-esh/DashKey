@@ -917,7 +917,7 @@ io.on('connection', (socket) => {
 async function start() {
   try {
     await sequelize.authenticate();
-    // Do not alter existing schema; ensure models are usable
+    // Do not alter exiisting schema; ensure models are usable
     await sequelize.sync({ alter: false });
     console.log('Database connected and models synced.');
 
