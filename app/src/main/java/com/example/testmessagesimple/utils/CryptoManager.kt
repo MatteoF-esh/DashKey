@@ -198,40 +198,60 @@ class CryptoManager(private val context: Context) {
 
     /**
      * Chiffre un message avec la clé publique du destinataire
+     *
+     * ⚠️ MISE À JOUR : Cette fonction utilise maintenant le système hybride RSA+AES-GCM
+     * pour supporter les messages de toute taille sans limitation.
+     *
      * @param message Le message en clair
      * @param recipientPublicKey La clé publique du destinataire (format Base64)
-     * @return Le message chiffré en Base64
+     * @return Le message chiffré en Base64 avec préfixe "HYBRID:" pour identification
      */
     fun encryptMessage(message: String, recipientPublicKey: String): String {
         try {
-            val publicKey = stringToPublicKey(recipientPublicKey)
-            val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, publicKey)
+            Log.d(TAG, "🔐 Chiffrement de message (${message.length} caractères)")
 
-            val encryptedBytes = cipher.doFinal(message.toByteArray(Charsets.UTF_8))
-            return Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
+            // Utiliser le système hybride pour tous les messages (pas de limitation de taille)
+            val encryptedBase64 = encryptLongText(message, recipientPublicKey)
+
+            // Ajouter un préfixe pour identifier les messages hybrides lors du déchiffrement
+            return "HYBRID:$encryptedBase64"
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur lors du chiffrement du message", e)
+            Log.e(TAG, "❌ Erreur lors du chiffrement du message", e)
             throw e
         }
     }
 
     /**
      * Déchiffre un message avec la clé privée de l'utilisateur
+     *
+     * ⚠️ MISE À JOUR : Cette fonction détecte automatiquement le format :
+     * - Format hybride (préfixe "HYBRID:") → utilise le système hybride RSA+AES-GCM
+     * - Format ancien (sans préfixe) → utilise l'ancien système RSA pur (rétrocompatibilité)
+     *
      * @param encryptedMessage Le message chiffré en Base64
      * @return Le message en clair
      */
     fun decryptMessage(encryptedMessage: String): String {
         try {
-            val privateKey = getPrivateKey()
-            val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
-            cipher.init(Cipher.DECRYPT_MODE, privateKey)
+            // Détecter le format du message chiffré
+            if (encryptedMessage.startsWith("HYBRID:")) {
+                // Nouveau format hybride RSA+AES-GCM
+                Log.d(TAG, "🔓 Déchiffrement de message hybride")
+                val encryptedBase64 = encryptedMessage.removePrefix("HYBRID:")
+                return decryptLongText(encryptedBase64)
+            } else {
+                // Ancien format RSA pur (pour rétrocompatibilité avec anciens messages)
+                Log.d(TAG, "🔓 Déchiffrement de message RSA classique (ancien format)")
+                val privateKey = getPrivateKey()
+                val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+                cipher.init(Cipher.DECRYPT_MODE, privateKey)
 
-            val encryptedBytes = Base64.decode(encryptedMessage, Base64.NO_WRAP)
-            val decryptedBytes = cipher.doFinal(encryptedBytes)
-            return String(decryptedBytes, Charsets.UTF_8)
+                val encryptedBytes = Base64.decode(encryptedMessage, Base64.NO_WRAP)
+                val decryptedBytes = cipher.doFinal(encryptedBytes)
+                return String(decryptedBytes, Charsets.UTF_8)
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Erreur lors du déchiffrement du message", e)
+            Log.e(TAG, "❌ Erreur lors du déchiffrement du message", e)
             // En cas d'erreur, retourner le message tel quel (pour compatibilité avec anciens messages non chiffrés)
             return encryptedMessage
         }
@@ -330,8 +350,123 @@ class CryptoManager(private val context: Context) {
 
             Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Erreur lors de l'affichage du résumé des clés", e)
+            Log.d(TAG, "❌ Erreur lors de l'affichage du résumé des clés", e)
         }
+    }
+
+    // ========== MÉTHODES POUR LE CHIFFREMENT HYBRIDE ==========
+
+    /**
+     * Chiffre des données volumineuses avec le système hybride RSA + AES-GCM
+     *
+     * Cette méthode encapsule les fonctions RSA existantes pour les utiliser avec
+     * le système hybride sans modifier l'implémentation RSA existante.
+     *
+     * @param data Les données à chiffrer (ByteArray)
+     * @param recipientPublicKeyString La clé publique du destinataire (format Base64)
+     * @return HybridEncryptedData contenant les données chiffrées
+     * @throws Exception si le chiffrement échoue
+     */
+    fun encryptDataHybrid(data: ByteArray, recipientPublicKeyString: String): HybridEncryptedData {
+        try {
+            Log.d(TAG, "🔐 Chiffrement hybride de ${data.size} octets")
+
+            // Convertir la clé publique du destinataire
+            val recipientPublicKey = stringToPublicKey(recipientPublicKeyString)
+
+            // Créer un encryptor qui utilise la transformation RSA existante
+            val rsaEncryptor: (ByteArray, java.security.PublicKey) -> ByteArray = { dataToEncrypt, publicKey ->
+                val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+                cipher.init(Cipher.ENCRYPT_MODE, publicKey)
+                cipher.doFinal(dataToEncrypt)
+            }
+
+            // Appeler le système hybride
+            return HybridCryptoUtils.encryptDataHybrid(data, recipientPublicKey, rsaEncryptor)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erreur lors du chiffrement hybride", e)
+            throw e
+        }
+    }
+
+    /**
+     * Déchiffre des données volumineuses avec le système hybride RSA + AES-GCM
+     *
+     * Cette méthode encapsule les fonctions RSA existantes pour les utiliser avec
+     * le système hybride sans modifier l'implémentation RSA existante.
+     *
+     * @param encryptedData Les données chiffrées (HybridEncryptedData)
+     * @return Les données déchiffrées (ByteArray)
+     * @throws Exception si le déchiffrement échoue
+     */
+    fun decryptDataHybrid(encryptedData: HybridEncryptedData): ByteArray {
+        try {
+            Log.d(TAG, "🔓 Déchiffrement hybride")
+
+            // Récupérer la clé privée
+            val privateKey = getPrivateKey()
+
+            // Créer un decryptor qui utilise la transformation RSA existante
+            val rsaDecryptor: (ByteArray, java.security.PrivateKey) -> ByteArray = { dataToDecrypt, privKey ->
+                val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
+                cipher.init(Cipher.DECRYPT_MODE, privKey)
+                cipher.doFinal(dataToDecrypt)
+            }
+
+            // Appeler le système hybride
+            return HybridCryptoUtils.decryptDataHybrid(encryptedData, privateKey, rsaDecryptor)
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erreur lors du déchiffrement hybride", e)
+            throw e
+        }
+    }
+
+    /**
+     * Chiffre un texte long avec le système hybride et retourne une String Base64
+     *
+     * @param text Le texte à chiffrer
+     * @param recipientPublicKeyString La clé publique du destinataire (format Base64)
+     * @return Le résultat chiffré au format Base64 String
+     */
+    fun encryptLongText(text: String, recipientPublicKeyString: String): String {
+        val data = text.toByteArray(Charsets.UTF_8)
+        val encryptedData = encryptDataHybrid(data, recipientPublicKeyString)
+        return encryptedData.toBase64String()
+    }
+
+    /**
+     * Déchiffre un texte long chiffré avec le système hybride
+     *
+     * @param encryptedBase64 Le texte chiffré au format Base64 String
+     * @return Le texte déchiffré
+     */
+    fun decryptLongText(encryptedBase64: String): String {
+        val encryptedData = HybridEncryptedData.fromBase64String(encryptedBase64)
+        val decryptedData = decryptDataHybrid(encryptedData)
+        return String(decryptedData, Charsets.UTF_8)
+    }
+
+    /**
+     * Chiffre un fichier avec le système hybride
+     *
+     * @param fileData Les données du fichier
+     * @param recipientPublicKeyString La clé publique du destinataire
+     * @return Les données chiffrées
+     */
+    fun encryptFile(fileData: ByteArray, recipientPublicKeyString: String): HybridEncryptedData {
+        Log.d(TAG, "📁 Chiffrement de fichier (${fileData.size} octets)")
+        return encryptDataHybrid(fileData, recipientPublicKeyString)
+    }
+
+    /**
+     * Déchiffre un fichier chiffré avec le système hybride
+     *
+     * @param encryptedData Les données chiffrées
+     * @return Les données déchiffrées du fichier
+     */
+    fun decryptFile(encryptedData: HybridEncryptedData): ByteArray {
+        Log.d(TAG, "📁 Déchiffrement de fichier")
+        return decryptDataHybrid(encryptedData)
     }
 }
 
