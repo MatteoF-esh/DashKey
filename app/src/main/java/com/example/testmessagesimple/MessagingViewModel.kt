@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.testmessagesimple.data.AuthRepository
 import com.example.testmessagesimple.data.Message as ApiMessage
 import com.example.testmessagesimple.data.MessagingRepository
+import com.example.testmessagesimple.data.UserBasic
 import com.example.testmessagesimple.utils.CryptoManager
 import com.example.testmessagesimple.utils.TokenManager
 import kotlinx.coroutines.delay
@@ -61,34 +62,135 @@ class MessagingViewModel(application: Application, private val token: String) : 
             errorMessage = null
             Log.d(TAG, "📥 Chargement initial des messages avec user $otherUserId")
 
-            // Charger les messages Room en clair
-            val roomMessagesMap = loadRoomMessagesMap(otherUserId)
-            Log.d(TAG, "💾 ${roomMessagesMap.size} messages trouvés dans Room")
+            val authData = tokenManager.getAuthData()
+            if (authData != null) {
+                val currentUserId = authData.second.id
+                val conversationId = createConversationId(currentUserId, otherUserId)
 
-            // Charger depuis l'API et déchiffrer
-            repository.getMessages(token, otherUserId)
-                .onSuccess { loadedMessages ->
-                    Log.d(TAG, "📥 ${loadedMessages.size} messages chargés de l'API")
+                // 1. D'ABORD charger depuis Room (messages déjà déchiffrés)
+                try {
+                    val roomMessages = dao.getMessagesForConversation(conversationId).first()
+                    Log.d(TAG, "💾 ${roomMessages.size} messages trouvés dans Room (déjà déchiffrés)")
 
-                    // Déchiffrer les messages en utilisant Room comme source si disponible
-                    messages = loadedMessages.map { msg ->
-                        decryptMessageIfNeeded(msg, roomMessagesMap)
+                    // Convertir les messages Room en ApiMessage pour l'affichage
+                    messages = roomMessages.map { roomMsg ->
+                        ApiMessage(
+                            id = roomMsg.serverMessageId ?: 0,
+                            senderId = roomMsg.senderId,
+                            receiverId = roomMsg.receiverId,
+                            content = roomMsg.text, // Déjà en CLAIR dans Room
+                            createdAt = "", // Pas utilisé pour l'affichage
+                            sender = UserBasic(roomMsg.senderId, roomMsg.senderEmail, null),
+                            receiver = null
+                        )
                     }
-                    Log.d(TAG, "✅ ${messages.size} messages déchiffrés et affichés")
+                    Log.d(TAG, "✅ ${messages.size} messages chargés depuis Room et affichés EN CLAIR")
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ Erreur chargement Room", e)
+                    messages = emptyList()
+                }
 
-                    // Sauvegarder en arrière-plan dans Room pour l'historique
-                    storeMessagesInRoom(messages, otherUserId)
-                }
-                .onFailure { error ->
-                    Log.e(TAG, "❌ Erreur chargement - ${error.message}")
-                    errorMessage = error.message
-                }
+                // 2. PUIS synchroniser avec l'API en arrière-plan
+                syncMessagesWithApi(otherUserId, conversationId, authData.second.email)
+            }
 
             isLoading = false
         }
 
         // Démarrer le rafraîchissement automatique
         startAutoRefresh()
+    }
+
+    /**
+     * Synchronise les messages avec l'API en arrière-plan
+     * Déchiffre les nouveaux messages et les stocke dans Room
+     */
+    private suspend fun syncMessagesWithApi(otherUserId: Int, conversationId: String, currentUserEmail: String) {
+        try {
+            val authData = tokenManager.getAuthData()
+            if (authData == null) return
+
+            val currentUserId = authData.second.id
+
+            Log.d(TAG, "🔄 Synchronisation avec l'API en arrière-plan...")
+
+            repository.getMessages(token, otherUserId)
+                .onSuccess { apiMessages ->
+                    Log.d(TAG, "📥 ${apiMessages.size} messages chargés de l'API")
+
+                    // Charger les messages existants dans Room
+                    val existingMessages = dao.getMessagesForConversation(conversationId).first()
+                    val existingServerIds = existingMessages.mapNotNull { it.serverMessageId }.toSet()
+
+                    Log.d(TAG, "💾 ${existingMessages.size} messages existants dans Room")
+                    Log.d(TAG, "🔍 IDs existants: $existingServerIds")
+
+                    // Traiter uniquement les nouveaux messages
+                    var newMessagesCount = 0
+                    apiMessages.forEach { apiMsg ->
+                        if (apiMsg.id !in existingServerIds) {
+                            newMessagesCount++
+                            Log.d(TAG, "🆕 Nouveau message ${apiMsg.id} détecté")
+
+                            // Déchiffrer le nouveau message
+                            val decryptedContent = try {
+                                Log.d(TAG, "🔓 Tentative de déchiffrement du message ${apiMsg.id}...")
+                                cryptoManager.decryptMessage(apiMsg.content)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "⚠️ Déchiffrement échoué pour message ${apiMsg.id}, contenu en clair")
+                                apiMsg.content
+                            }
+
+                            // Stocker dans Room
+                            val isSentByMe = apiMsg.senderId == currentUserId
+                            val senderEmail = if (isSentByMe) {
+                                currentUserEmail
+                            } else {
+                                apiMsg.sender?.email ?: "Inconnu"
+                            }
+
+                            val localMessage = Message(
+                                senderId = apiMsg.senderId,
+                                receiverId = apiMsg.receiverId,
+                                senderEmail = senderEmail,
+                                text = decryptedContent, // Stocké EN CLAIR
+                                timestamp = System.currentTimeMillis(),
+                                conversationId = conversationId,
+                                isSentByMe = isSentByMe,
+                                serverMessageId = apiMsg.id,
+                                fromServer = true
+                            )
+
+                            dao.insertMessage(localMessage)
+                            Log.d(TAG, "💾 Message ${apiMsg.id} déchiffré et stocké: '${decryptedContent.take(30)}...'")
+                        }
+                    }
+
+                    if (newMessagesCount > 0) {
+                        Log.d(TAG, "✅ ${newMessagesCount} nouveaux messages synchronisés")
+                        // Recharger depuis Room pour afficher les nouveaux messages
+                        val updatedMessages = dao.getMessagesForConversation(conversationId).first()
+                        messages = updatedMessages.map { roomMsg ->
+                            ApiMessage(
+                                id = roomMsg.serverMessageId ?: 0,
+                                senderId = roomMsg.senderId,
+                                receiverId = roomMsg.receiverId,
+                                content = roomMsg.text,
+                                createdAt = "",
+                                sender = UserBasic(roomMsg.senderId, roomMsg.senderEmail, null),
+                                receiver = null
+                            )
+                        }
+                    } else {
+                        Log.d(TAG, "✅ Aucun nouveau message")
+                    }
+                }
+                .onFailure { error ->
+                    Log.e(TAG, "❌ Erreur synchronisation API - ${error.message}")
+                }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erreur lors de la synchronisation", e)
+        }
     }
 
     /**
@@ -162,29 +264,14 @@ class MessagingViewModel(application: Application, private val token: String) : 
             while (currentOtherUserId != null) {
                 delay(3000) // Rafraîchir toutes les 3 secondes
                 currentOtherUserId?.let { userId ->
-                    // Charger les messages Room pour le déchiffrement
-                    val roomMessagesMap = loadRoomMessagesMap(userId)
+                    val authData = tokenManager.getAuthData()
+                    if (authData != null) {
+                        val currentUserId = authData.second.id
+                        val conversationId = createConversationId(currentUserId, userId)
 
-                    // Rafraîchir depuis l'API
-                    repository.getMessages(token, userId)
-                        .onSuccess { loadedMessages ->
-                            // Déchiffrer avec Room comme source
-                            val decryptedMessages = loadedMessages.map { msg ->
-                                decryptMessageIfNeeded(msg, roomMessagesMap)
-                            }
-
-                            // Mettre à jour seulement si changement
-                            if (decryptedMessages.size != messages.size) {
-                                Log.d(TAG, "🔄 Nouveaux messages détectés (${decryptedMessages.size} vs ${messages.size})")
-                                messages = decryptedMessages
-
-                                // Sauvegarder en arrière-plan dans Room
-                                storeMessagesInRoom(decryptedMessages, userId)
-                            }
-                        }
-                        .onFailure { error ->
-                            Log.d(TAG, "⚠️ Erreur auto-refresh - ${error.message}")
-                        }
+                        // Synchroniser avec l'API (déchiffre et stocke les nouveaux messages)
+                        syncMessagesWithApi(userId, conversationId, authData.second.email)
+                    }
                 }
             }
         }
