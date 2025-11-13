@@ -40,8 +40,10 @@ const sequelize = new Sequelize(DB_NAME, DB_USER, DB_PASSWORD, {
   port: DB_PORT,
   dialect: 'mysql',
   logging: false,
+  timezone: '+01:00', // Timezone Europe/Paris (UTC+1 en hiver, UTC+2 en été)
   dialectOptions: {
-    // You can add timezone or SSL options here if needed
+    timezone: '+01:00', // Timezone pour les requêtes MySQL
+    // You can add SSL options here if needed
   }
 });
 
