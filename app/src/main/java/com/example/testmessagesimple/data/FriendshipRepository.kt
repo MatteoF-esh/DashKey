@@ -9,20 +9,43 @@ class FriendshipRepository {
     suspend fun searchUserByEmail(token: String, email: String): Result<UserInfo> {
         return withContext(Dispatchers.IO) {
             try {
-                println("DEBUG: Recherche utilisateur - email: $email")
+                println("🔍 Repository: ===== RECHERCHE UTILISATEUR =====")
+                println("🔍 Repository: Email recherché: '$email'")
+                println("🔍 Repository: Token présent: ${token.isNotEmpty()}")
+
                 val response = api.searchUserByEmail("Bearer $token", email)
-                println("DEBUG: Response code: ${response.code()}")
-                println("DEBUG: Response body: ${response.body()}")
+
+                println("🔍 Repository: Response code: ${response.code()}")
+                println("🔍 Repository: Response success: ${response.isSuccessful}")
 
                 if (response.isSuccessful && response.body() != null) {
-                    Result.success(response.body()!!)
+                    val searchResponse = response.body()!!
+                    println("🔍 Repository: Nombre de résultats: ${searchResponse.users.size}")
+
+                    // Chercher l'utilisateur avec l'email exact
+                    val user = searchResponse.users.firstOrNull {
+                        it.email.equals(email, ignoreCase = true)
+                    }
+
+                    if (user != null) {
+                        println("✅ Repository: Utilisateur trouvé")
+                        println("   - ID: ${user.id}")
+                        println("   - Email: ${user.email}")
+                        println("   - Roles: ${user.roles}")
+                        println("   - PublicKey: ${if (user.publicKey != null) "Présente" else "Absente"}")
+                        Result.success(user)
+                    } else {
+                        println("❌ Repository: Aucun utilisateur avec l'email exact '$email'")
+                        println("   Résultats trouvés: ${searchResponse.users.map { it.email }}")
+                        Result.failure(Exception("Utilisateur non trouvé"))
+                    }
                 } else {
                     val errorMsg = response.errorBody()?.string() ?: "Utilisateur non trouvé"
-                    println("DEBUG: Erreur: $errorMsg")
+                    println("❌ Repository: Erreur recherche - $errorMsg")
                     Result.failure(Exception(errorMsg))
                 }
             } catch (e: Exception) {
-                println("DEBUG: Exception lors de la recherche: ${e.message}")
+                println("❌ Repository: Exception lors de la recherche: ${e.message}")
                 e.printStackTrace()
                 Result.failure(e)
             }
@@ -32,25 +55,28 @@ class FriendshipRepository {
     suspend fun sendFriendRequest(token: String, receiverId: Int): Result<FriendRequestResponse> {
         return withContext(Dispatchers.IO) {
             try {
-                println("DEBUG Repository: ===== ENVOI DEMANDE D'AMI =====")
-                println("DEBUG Repository: receiverId: $receiverId")
-                println("DEBUG Repository: Token présent: ${token.isNotEmpty()}")
+                println("🔍 ===== ENVOI DEMANDE D'AMI =====")
+                println("🔍 receiverId: $receiverId (type: ${receiverId::class.simpleName})")
+                println("🔍 Token présent: ${token.isNotEmpty()}")
+                println("🔍 Token (50 premiers car): ${token.take(50)}")
 
-                val requestBody = FriendRequestRequest(receiverId)
-                println("DEBUG Repository: Request body créé: $requestBody")
+                val requestBody = FriendRequestRequest(receiverId = receiverId)
+                println("🔍 Request body créé: $requestBody")
+                println("🔍 Request body receiverId: ${requestBody.receiverId}")
+                println("🔍 Request body receiverEmail: ${requestBody.receiverEmail}")
 
                 val response = api.sendFriendRequest(
                     "Bearer $token",
                     requestBody
                 )
 
-                println("DEBUG Repository: Response code: ${response.code()}")
-                println("DEBUG Repository: Response success: ${response.isSuccessful}")
-                println("DEBUG Repository: Response body: ${response.body()}")
+                println("🔍 Response code: ${response.code()}")
+                println("🔍 Response success: ${response.isSuccessful}")
+                println("🔍 Response body: ${response.body()}")
 
                 val errorBody = response.errorBody()?.string()
                 if (errorBody != null) {
-                    println("DEBUG Repository: Response error body: $errorBody")
+                    println("❌ Response error body: $errorBody")
                 }
 
                 if (response.isSuccessful && response.body() != null) {

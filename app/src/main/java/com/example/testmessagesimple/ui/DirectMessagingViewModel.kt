@@ -7,7 +7,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import com.example.testmessagesimple.AppDatabase
 import com.example.testmessagesimple.Message
+import com.example.testmessagesimple.data.AuthRepository
 import com.example.testmessagesimple.data.DirectMessagingService
+import com.example.testmessagesimple.utils.CryptoManager
+import com.example.testmessagesimple.utils.TokenManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,6 +41,15 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
 
     // Service de messagerie en temps réel
     private val messagingService = DirectMessagingService()
+
+    // E2EE : Gestionnaire de chiffrement
+    private val cryptoManager = CryptoManager(application)
+
+    // TokenManager pour récupérer le token JWT
+    private val tokenManager = TokenManager(application)
+
+    // AuthRepository pour récupérer les clés publiques
+    private val authRepository = AuthRepository()
 
     // État de connexion
     val isConnected: StateFlow<Boolean> = messagingService.isConnected
@@ -153,15 +165,39 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
 
         viewModelScope.launch {
             try {
+                Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                Log.d(TAG, "📨 ENVOI DE MESSAGE")
+                Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                Log.d(TAG, "📝 Message en CLAIR : '$content'")
+                Log.d(TAG, "👤 Destinataire : $receiverEmail (ID: $receiverId)")
+
                 val tempId = UUID.randomUUID().toString()
                 val timestamp = System.currentTimeMillis()
 
-                // 1. Stocker localement IMMÉDIATEMENT
+                // CHIFFREMENT E2EE : Récupérer la clé publique du destinataire
+                Log.d(TAG, "🔑 Récupération de la clé publique du destinataire...")
+                val recipientPublicKey = getRecipientPublicKey(receiverId)
+
+                val messageToSend: String
+                if (recipientPublicKey != null) {
+                    // CHIFFRER le message avec la clé publique du destinataire
+                    Log.d(TAG, "🔐 Chiffrement du message avec RSA...")
+                    messageToSend = cryptoManager.encryptMessage(content, recipientPublicKey)
+                    Log.d(TAG, "✅ Message CHIFFRÉ : ${messageToSend.take(50)}...")
+                    Log.d(TAG, "📏 Taille chiffrée : ${messageToSend.length} caractères")
+                } else {
+                    // Pas de clé publique = envoyer en clair (fallback)
+                    Log.w(TAG, "⚠️ ATTENTION : Pas de clé publique pour le destinataire !")
+                    Log.w(TAG, "⚠️ Message envoyé EN CLAIR (non sécurisé)")
+                    messageToSend = content
+                }
+
+                // 1. Stocker localement EN CLAIR (pour pouvoir le relire)
                 val localMessage = Message(
                     senderId = currentUserId,
                     receiverId = receiverId,
                     senderEmail = currentUserEmail,
-                    text = content,
+                    text = content, // Stocké EN CLAIR localement
                     timestamp = timestamp,
                     conversationId = conversationId,
                     isSentByMe = true,
@@ -170,37 +206,82 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
                 )
 
                 dao.insertMessage(localMessage)
-                Log.d(TAG, "💾 Message stocké localement")
+                Log.d(TAG, "💾 Message stocké localement EN CLAIR (pour relecture)")
 
-                // 2. Envoyer via Socket.IO
+                // 2. Envoyer le message CHIFFRÉ via Socket.IO
                 _sendStatus.value = SendStatus.Sending
-                messagingService.sendMessage(receiverId, content, tempId)
-                Log.d(TAG, "📤 Message envoyé via Socket.IO")
+                messagingService.sendMessage(receiverId, messageToSend, tempId)
+                Log.d(TAG, "📤 Message ${if (recipientPublicKey != null) "CHIFFRÉ" else "EN CLAIR"} envoyé via Socket.IO")
+                Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Erreur lors de l'envoi", e)
+                e.printStackTrace()
                 _sendStatus.value = SendStatus.Error(e.message ?: "Erreur inconnue")
             }
         }
     }
 
     /**
+     * Récupère la clé publique du destinataire
+     */
+    private suspend fun getRecipientPublicKey(userId: Int): String? {
+        return try {
+            // Récupérer depuis l'AuthRepository
+            val token = "Bearer ${tokenManager.getAuthData()?.first ?: ""}"
+            val result = authRepository.getPublicKey(token, userId)
+
+            result.getOrNull()?.publicKey.also { key ->
+                if (key != null) {
+                    Log.d(TAG, "✅ Clé publique récupérée : ${key.take(30)}...")
+                } else {
+                    Log.w(TAG, "⚠️ Clé publique non disponible pour l'utilisateur $userId")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Erreur récupération clé publique", e)
+            null
+        }
+    }
+
+    /**
      * Gérer la réception d'un message
-     * Stocke le message localement
+     * Stocke le message localement après déchiffrement
      */
     private fun handleReceivedMessage(received: com.example.testmessagesimple.data.MessageReceived) {
         viewModelScope.launch {
             try {
                 val currentUserId = _currentUserId.value ?: return@launch
 
+                Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                Log.d(TAG, "📨 RÉCEPTION DE MESSAGE")
+                Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                Log.d(TAG, "👤 Expéditeur : ${received.senderEmail} (ID: ${received.senderId})")
+                Log.d(TAG, "📦 Message REÇU (potentiellement chiffré) : ${received.content.take(50)}...")
+                Log.d(TAG, "📏 Taille reçue : ${received.content.length} caractères")
+
                 // Créer l'ID de conversation (même format que pour l'envoi)
                 val conversationId = createConversationId(currentUserId, received.senderId)
+
+                // DÉCHIFFREMENT E2EE : Essayer de déchiffrer avec notre clé privée
+                val decryptedContent: String = try {
+                    Log.d(TAG, "🔓 Tentative de déchiffrement avec clé privée...")
+                    val decrypted = cryptoManager.decryptMessage(received.content)
+                    Log.d(TAG, "✅ Message DÉCHIFFRÉ : '$decrypted'")
+                    Log.d(TAG, "🔐 Le message était bien CHIFFRÉ !")
+                    decrypted
+                } catch (e: Exception) {
+                    // Si le déchiffrement échoue, c'est que le message était en clair
+                    Log.w(TAG, "⚠️ Déchiffrement échoué - Le message était EN CLAIR")
+                    Log.w(TAG, "📝 Contenu en clair : '${received.content}'")
+                    received.content
+                }
 
                 val message = Message(
                     senderId = received.senderId,
                     receiverId = currentUserId,
                     senderEmail = received.senderEmail,
-                    text = received.content,
+                    text = decryptedContent, // Stocker EN CLAIR pour pouvoir le lire
                     timestamp = received.timestamp,
                     conversationId = conversationId,
                     isSentByMe = false,
@@ -211,10 +292,12 @@ class DirectMessagingViewModel(application: Application) : AndroidViewModel(appl
                 dao.insertMessage(message)
 
                 val source = if (received.fromServer) "serveur (était offline)" else "livraison directe"
-                Log.d(TAG, "💾 Message reçu et stocké localement ($source)")
+                Log.d(TAG, "💾 Message déchiffré et stocké localement ($source)")
+                Log.d(TAG, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Erreur lors du traitement du message reçu", e)
+                e.printStackTrace()
             }
         }
     }

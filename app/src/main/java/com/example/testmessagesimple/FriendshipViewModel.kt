@@ -47,17 +47,28 @@ class FriendshipViewModel(private val token: String) : ViewModel() {
         viewModelScope.launch {
             isLoading = true
             errorMessage = null
-            println("DEBUG ViewModel: Recherche utilisateur avec email: $email")
+            println("🔍 ViewModel: Recherche utilisateur avec email: $email")
 
             // D'abord, rechercher l'utilisateur par email pour obtenir son ID
             repository.searchUserByEmail(token, email)
                 .onSuccess { user ->
-                    println("DEBUG ViewModel: Utilisateur trouvé - ID: ${user.id}")
+                    println("✅ ViewModel: Utilisateur trouvé")
+                    println("   - ID: ${user.id}")
+                    println("   - Email: ${user.email}")
+                    println("   - Roles: ${user.roles}")
+
+                    if (user.id <= 0) {
+                        println("❌ ViewModel: ID utilisateur invalide (${user.id})")
+                        errorMessage = "Erreur : ID utilisateur invalide"
+                        isLoading = false
+                        return@onSuccess
+                    }
+
                     // Ensuite, envoyer la demande d'ami avec l'ID
                     sendFriendRequestById(user.id, onSuccess)
                 }
                 .onFailure {
-                    println("DEBUG ViewModel: Utilisateur non trouvé - ${it.message}")
+                    println("❌ ViewModel: Échec de la recherche - ${it.message}")
                     errorMessage = "Utilisateur non trouvé : ${it.message}"
                     isLoading = false
                 }
@@ -69,6 +80,14 @@ class FriendshipViewModel(private val token: String) : ViewModel() {
             isLoading = true
             errorMessage = null
             println("DEBUG ViewModel: Envoi demande à l'ID $receiverId")
+
+            // Validation de l'ID
+            if (receiverId <= 0) {
+                println("❌ ViewModel: receiverId invalide ($receiverId)")
+                errorMessage = "Erreur : ID utilisateur invalide ($receiverId)"
+                isLoading = false
+                return@launch
+            }
             repository.sendFriendRequest(token, receiverId)
                 .onSuccess {
                     println("DEBUG ViewModel: Demande envoyée avec succès")

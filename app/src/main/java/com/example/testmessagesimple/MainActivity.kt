@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -516,7 +517,10 @@ fun AppNavHost(
             val friendEmail = backStackEntry.arguments?.getString("friendEmail") ?: return@composable
             val friendId = backStackEntry.arguments?.getInt("friendId") ?: return@composable
 
-            val messagingViewModel = remember(friendId) { MessagingViewModel(token) }
+            val context = LocalContext.current
+            val messagingViewModel = remember(friendId) {
+                MessagingViewModel(context.applicationContext as android.app.Application, token)
+            }
 
             // Charger les messages au démarrage
             LaunchedEffect(friendId) {
