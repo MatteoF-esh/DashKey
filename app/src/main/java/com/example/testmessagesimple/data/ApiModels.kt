@@ -5,7 +5,8 @@ package com.example.testmessagesimple.data
 
 data class RegisterRequest(
     val email: String,
-    val password: String
+    val password: String,
+    val publicKey: String? = null
 )
 
 data class LoginRequest(
@@ -29,7 +30,27 @@ data class AuthResponse(
 data class UserInfo(
     val id: Int,
     val email: String,
-    val roles: List<String>
+    val roles: List<String> = emptyList(),
+    val publicKey: String? = null
+)
+
+data class UserSearchResponse(
+    val users: List<UserInfo>
+)
+
+data class UpdatePublicKeyRequest(
+    val publicKey: String
+)
+
+data class UpdatePublicKeyResponse(
+    val message: String,
+    val publicKey: String
+)
+
+data class PublicKeyResponse(
+    val userId: Int,
+    val email: String,
+    val publicKey: String
 )
 
 data class ErrorResponse(
@@ -49,13 +70,15 @@ data class Message(
 
 data class UserBasic(
     val id: Int,
-    val email: String
+    val email: String,
+    val publicKey: String? = null
 )
 
 // ===== AMITIÉS =====
 
 data class FriendRequestRequest(
-    val receiverId: Int
+    val receiverId: Int? = null,
+    val receiverEmail: String? = null
 )
 
 data class FriendRequestResponse(

@@ -1,6 +1,8 @@
 package com.example.testmessagesimple
 
+import android.content.Context
 import android.os.Bundle
+import android.util.Log
 import android.util.Patterns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -39,14 +41,16 @@ import androidx.room.Room
 import com.example.testmessagesimple.data.AuthRepository
 import com.example.testmessagesimple.data.UserInfo
 import com.example.testmessagesimple.ui.theme.TestMessageSimpleTheme
+import com.example.testmessagesimple.utils.CryptoManager
 import com.example.testmessagesimple.utils.TokenManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 // --- ViewModel ---
-class AuthViewModel(private val tokenManager: TokenManager) : ViewModel() {
+class AuthViewModel(private val tokenManager: TokenManager, private val context: Context) : ViewModel() {
     private val authRepository = AuthRepository()
+    private val cryptoManager = CryptoManager(context)
 
     var currentUser by mutableStateOf<UserInfo?>(null)
         private set
@@ -75,6 +79,8 @@ class AuthViewModel(private val tokenManager: TokenManager) : ViewModel() {
         val authData = tokenManager.getAuthData()
         if (authData != null) {
             currentUser = authData.second
+            // Définir l'utilisateur actuel pour le CryptoManager
+            cryptoManager.setCurrentUser(authData.second.id)
         }
     }
 
@@ -119,11 +125,76 @@ class AuthViewModel(private val tokenManager: TokenManager) : ViewModel() {
             isLoading = true
             errorMessage = null
             val result = authRepository.login(email, password)
-            result.onSuccess {
-                tokenManager.saveAuthData(it.token, it.user)
+            result.onSuccess { authResponse ->
+                tokenManager.saveAuthData(authResponse.token, authResponse.user)
                 tokenManager.clearLockout() // Clear lockout on success
-                currentUser = it.user
+                currentUser = authResponse.user
                 failedAttempts = 0 // Reset on success
+
+                // Définir l'utilisateur actuel pour le CryptoManager
+                Log.d("AuthViewModel", "Définition de l'utilisateur ${authResponse.user.id} pour le CryptoManager (login)")
+                cryptoManager.setCurrentUser(authResponse.user.id)
+
+                // Si l'utilisateur n'a pas de clé publique, la générer et l'envoyer
+                if (authResponse.user.publicKey.isNullOrEmpty()) {
+                    Log.d("AuthViewModel", "L'utilisateur n'a pas de clé publique, génération en cours...")
+                    try {
+                        val publicKey = cryptoManager.initializeKeys()
+                        Log.d("AuthViewModel", "Clé publique générée (login): ${publicKey.take(50)}...")
+
+                        // Vérifier que la clé privée est bien stockée localement
+                        if (cryptoManager.hasPrivateKey()) {
+                            Log.d("AuthViewModel", "✅ Clé privée confirmée dans le Keystore local (login)")
+                            cryptoManager.logKeysSummary()
+                        }
+
+                        // Envoyer la clé publique au serveur
+                        Log.d("AuthViewModel", "Envoi de la clé publique au serveur (login)...")
+                        val updateResult = authRepository.updatePublicKey("Bearer ${authResponse.token}", publicKey)
+                        updateResult.onSuccess {
+                            Log.d("AuthViewModel", "✅ Clé publique envoyée avec succès (login)")
+                            // Mettre à jour l'utilisateur avec la nouvelle clé
+                            currentUser = authResponse.user.copy(publicKey = publicKey)
+                            tokenManager.saveAuthData(authResponse.token, currentUser!!)
+                        }.onFailure { e ->
+                            Log.e("AuthViewModel", "❌ Erreur lors de l'envoi de la clé publique (login): ${e.message}", e)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("AuthViewModel", "❌ Erreur lors de la génération des clés (login): ${e.message}", e)
+                        e.printStackTrace()
+                    }
+                } else {
+                    // Si l'utilisateur a déjà une clé publique, s'assurer que les clés locales existent
+                    Log.d("AuthViewModel", "L'utilisateur a déjà une clé publique sur le serveur")
+                    if (!cryptoManager.hasKeys()) {
+                        Log.w("AuthViewModel", "⚠️ Clés locales manquantes ! Régénération nécessaire...")
+                        Log.w("AuthViewModel", "⚠️ ATTENTION : Les messages précédents seront illisibles")
+                        // Note: Dans un cas réel E2EE, il faudrait gérer ce cas (perte de clés = perte de messages)
+                        // Pour l'instant, on génère de nouvelles clés et on met à jour le serveur
+                        try {
+                            val publicKey = cryptoManager.initializeKeys()
+                            if (cryptoManager.hasPrivateKey()) {
+                                Log.d("AuthViewModel", "✅ Nouvelles clés régénérées")
+                                cryptoManager.logKeysSummary()
+                            }
+                            val updateResult = authRepository.updatePublicKey("Bearer ${authResponse.token}", publicKey)
+                            updateResult.onSuccess {
+                                Log.d("AuthViewModel", "✅ Nouvelles clés générées et envoyées")
+                                currentUser = authResponse.user.copy(publicKey = publicKey)
+                                tokenManager.saveAuthData(authResponse.token, currentUser!!)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("AuthViewModel", "❌ Erreur lors de la régénération des clés", e)
+                        }
+                    } else {
+                        Log.d("AuthViewModel", "✅ Clés locales trouvées")
+                        // Vérifier et afficher le résumé
+                        if (cryptoManager.hasPrivateKey()) {
+                            Log.d("AuthViewModel", "✅ Clé privée confirmée dans le Keystore local")
+                            cryptoManager.logKeysSummary()
+                        }
+                    }
+                }
             }.onFailure {
                 errorMessage = it.message
                 handleFailedAttempt()
@@ -141,12 +212,48 @@ class AuthViewModel(private val tokenManager: TokenManager) : ViewModel() {
         viewModelScope.launch {
             isLoading = true
             errorMessage = null
-            val result = authRepository.register(email, password)
-            result.onSuccess {
-                tokenManager.saveAuthData(it.token, it.user)
+
+            // S'inscrire SANS clé publique d'abord
+            val result = authRepository.register(email, password, null)
+            result.onSuccess { authResponse ->
+                tokenManager.saveAuthData(authResponse.token, authResponse.user)
                 tokenManager.clearLockout() // Clear lockout on success
-                currentUser = it.user
+                currentUser = authResponse.user
                 failedAttempts = 0 // Reset on success
+
+                // Maintenant, générer les clés avec l'ID utilisateur
+                try {
+                    Log.d("AuthViewModel", "Définition de l'utilisateur ${authResponse.user.id} pour le CryptoManager")
+                    cryptoManager.setCurrentUser(authResponse.user.id)
+
+                    Log.d("AuthViewModel", "Génération de la clé publique...")
+                    val publicKey = cryptoManager.initializeKeys()
+                    Log.d("AuthViewModel", "Clé publique générée: ${publicKey.take(50)}...")
+
+                    // Vérifier que la clé privée est bien stockée localement
+                    if (cryptoManager.hasPrivateKey()) {
+                        Log.d("AuthViewModel", "✅ Clé privée confirmée dans le Keystore local")
+                        // Afficher le résumé des clés
+                        cryptoManager.logKeysSummary()
+                    } else {
+                        Log.e("AuthViewModel", "❌ ERREUR : Clé privée non trouvée dans le Keystore !")
+                    }
+
+                    // Envoyer la clé publique au serveur
+                    Log.d("AuthViewModel", "Envoi de la clé publique au serveur...")
+                    val updateResult = authRepository.updatePublicKey("Bearer ${authResponse.token}", publicKey)
+                    updateResult.onSuccess {
+                        Log.d("AuthViewModel", "✅ Clé publique envoyée avec succès pour le nouvel utilisateur")
+                        // Mettre à jour l'utilisateur avec la nouvelle clé
+                        currentUser = authResponse.user.copy(publicKey = publicKey)
+                        tokenManager.saveAuthData(authResponse.token, currentUser!!)
+                    }.onFailure { e ->
+                        Log.e("AuthViewModel", "❌ Erreur lors de l'envoi de la clé publique: ${e.message}", e)
+                    }
+                } catch (e: Exception) {
+                    Log.e("AuthViewModel", "❌ Erreur lors de la génération des clés: ${e.message}", e)
+                    e.printStackTrace()
+                }
             }.onFailure {
                 errorMessage = it.message
                 handleFailedAttempt()
@@ -181,7 +288,7 @@ private lateinit var database: AppDatabase
 // --- Activité Principale ---
 class MainActivity : ComponentActivity() {
     private val authViewModel: AuthViewModel by viewModels {
-        AuthViewModelFactory(TokenManager(applicationContext))
+        AuthViewModelFactory(TokenManager(applicationContext), applicationContext)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

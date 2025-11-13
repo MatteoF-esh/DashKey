@@ -28,7 +28,7 @@ interface MessagingApi {
     suspend fun searchUserByEmail(
         @Header("Authorization") token: String,
         @Query("email") email: String
-    ): Response<UserInfo>
+    ): Response<UserSearchResponse>
 
     // Historique messages
     @GET("messages")
@@ -80,4 +80,20 @@ interface MessagingApi {
         @Header("Authorization") token: String,
         @Path("friendId") friendId: Int
     ): Response<Void>
+
+    // ===== ENDPOINTS CRYPTOGRAPHIE =====
+
+    // Mettre à jour la clé publique de l'utilisateur
+    @PUT("users/public-key")
+    suspend fun updatePublicKey(
+        @Header("Authorization") token: String,
+        @Body request: UpdatePublicKeyRequest
+    ): Response<UpdatePublicKeyResponse>
+
+    // Récupérer la clé publique d'un utilisateur
+    @GET("users/{userId}/public-key")
+    suspend fun getPublicKey(
+        @Header("Authorization") token: String,
+        @Path("userId") userId: Int
+    ): Response<PublicKeyResponse>
 }

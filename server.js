@@ -75,10 +75,15 @@ const User = sequelize.define(
       type: DataTypes.STRING(255),
       allowNull: false,
     },
+    publicKey: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: 'public_key',
+    },
   },
   {
     tableName: 'user',
-    timestamps: false,
+    timestamps: false, // Pas de gestion automatique des timestamps
   }
 );
 
@@ -203,7 +208,9 @@ app.get('/', (_req, res) => {
 // Register new user
 app.post('/register', async (req, res) => {
   try {
-    const { email, password } = req.body || {};
+    console.log('📝 POST /register - Début de l\'inscription');
+    const { email, password, publicKey } = req.body || {};
+    console.log('📝 Email:', email, '- PublicKey fournie:', publicKey ? `Oui (${publicKey.length} car)` : 'Non');
 
     // Validation
     if (!email || !password) {
@@ -228,7 +235,9 @@ app.post('/register', async (req, res) => {
       email,
       password: hashedPassword,
       roles: ['ROLE_USER'],
+      publicKey: publicKey || null,
     });
+    console.log('✅ Utilisateur créé - ID:', user.id, '- PublicKey:', user.publicKey ? user.publicKey.substring(0, 50) + '...' : 'null');
 
     // Generate JWT
     const token = jwt.sign(
@@ -248,6 +257,7 @@ app.post('/register', async (req, res) => {
         id: user.id,
         email: user.email,
         roles: user.roles,
+        publicKey: user.publicKey,
       },
     });
   } catch (err) {
@@ -259,7 +269,9 @@ app.post('/register', async (req, res) => {
 // Login
 app.post('/login', async (req, res) => {
   try {
+    console.log('🔐 POST /login - Début de la connexion');
     const { email, password } = req.body || {};
+    console.log('🔐 Email:', email);
 
     // Validation
     if (!email || !password) {
@@ -277,6 +289,8 @@ app.post('/login', async (req, res) => {
     if (!isPasswordValid) {
       return res.status(401).json({ error: 'unauthorized', message: 'Email ou mot de passe incorrect' });
     }
+
+    console.log('✅ Connexion réussie - ID:', user.id, '- PublicKey:', user.publicKey ? user.publicKey.substring(0, 50) + '...' : 'null');
 
     // Generate JWT
     const token = jwt.sign(
@@ -296,6 +310,7 @@ app.post('/login', async (req, res) => {
         id: user.id,
         email: user.email,
         roles: user.roles,
+        publicKey: user.publicKey,
       },
     });
   } catch (err) {
@@ -312,7 +327,7 @@ app.post('/login', async (req, res) => {
 app.get('/me', authenticateJWT, async (req, res) => {
   try {
     const user = await User.findByPk(req.user.userId, {
-      attributes: ['id', 'email', 'roles'],
+      attributes: ['id', 'email', 'roles', 'publicKey'],
     });
 
     if (!user) {
@@ -323,6 +338,7 @@ app.get('/me', authenticateJWT, async (req, res) => {
       id: user.id,
       email: user.email,
       roles: user.roles,
+      publicKey: user.publicKey,
     });
   } catch (err) {
     console.error('GET /me failed:', err);
@@ -413,18 +429,22 @@ app.post('/messages', authenticateJWT, async (req, res) => {
 // Search users by email (for finding friends)
 app.get('/users/search', authenticateJWT, async (req, res) => {
   try {
+    console.log('🔍 ===== GET /users/search =====');
     const currentUserId = req.user.userId;
     const { q, email, limit } = req.query;
+    console.log('🔍 Paramètres:', { q, email, limit, currentUserId });
 
     // Validation
     const searchQuery = q || email;
     if (!searchQuery || typeof searchQuery !== 'string' || searchQuery.trim().length === 0) {
+      console.log('❌ Paramètre de recherche manquant');
       return res.status(400).json({
         error: 'bad_request',
         message: 'Paramètre "q" ou "email" requis pour la recherche'
       });
     }
 
+    console.log('🔍 Recherche de:', searchQuery);
     const searchLimit = limit ? Math.min(parseInt(limit), 50) : 20;
 
     // Search users by email (partial match)
@@ -437,14 +457,21 @@ app.get('/users/search', authenticateJWT, async (req, res) => {
           [Sequelize.Op.ne]: currentUserId  // Exclude current user
         }
       },
-      attributes: ['id', 'email'],
+      attributes: ['id', 'email', 'roles', 'publicKey'],
       limit: searchLimit
+    });
+
+    console.log('✅ Utilisateurs trouvés:', users.length);
+    users.forEach(u => {
+      console.log(`   - ID: ${u.id}, Email: ${u.email}`);
     });
 
     res.json({
       users: users.map(u => ({
         id: u.id,
-        email: u.email
+        email: u.email,
+        roles: u.roles || [],
+        publicKey: u.publicKey
       }))
     });
   } catch (err) {
@@ -463,7 +490,7 @@ app.get('/users/:id', authenticateJWT, async (req, res) => {
     }
 
     const user = await User.findByPk(userId, {
-      attributes: ['id', 'email', 'roles']
+      attributes: ['id', 'email', 'roles', 'publicKey']
     });
 
     if (!user) {
@@ -473,10 +500,80 @@ app.get('/users/:id', authenticateJWT, async (req, res) => {
     res.json({
       id: user.id,
       email: user.email,
-      roles: user.roles
+      roles: user.roles,
+      publicKey: user.publicKey
     });
   } catch (err) {
     console.error('GET /users/:id failed:', err);
+    res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+// Update user's public key
+app.put('/users/public-key', authenticateJWT, async (req, res) => {
+  try {
+    console.log('🔑 PUT /users/public-key - Début de la mise à jour');
+    console.log('🔑 User ID:', req.user?.userId);
+    console.log('🔑 Body reçu:', req.body);
+
+    const { publicKey } = req.body || {};
+
+    if (!publicKey) {
+      console.log('❌ Clé publique manquante dans la requête');
+      return res.status(400).json({ error: 'bad_request', message: 'Clé publique requise' });
+    }
+
+    console.log('🔑 Clé publique reçue (longueur:', publicKey.length, '):', publicKey.substring(0, 50) + '...');
+
+    const user = await User.findByPk(req.user.userId);
+    if (!user) {
+      console.log('❌ Utilisateur introuvable:', req.user.userId);
+      return res.status(404).json({ error: 'not_found', message: 'Utilisateur introuvable' });
+    }
+
+    console.log('🔑 Ancien publicKey:', user.publicKey ? user.publicKey.substring(0, 50) + '...' : 'null');
+    user.publicKey = publicKey;
+    await user.save();
+    console.log('✅ Nouveau publicKey sauvegardé:', user.publicKey.substring(0, 50) + '...');
+
+    res.json({
+      message: 'Clé publique mise à jour avec succès',
+      publicKey: user.publicKey
+    });
+  } catch (err) {
+    console.error('❌ PUT /users/public-key failed:', err);
+    res.status(500).json({ error: 'internal_error', message: 'Erreur lors de la mise à jour de la clé publique' });
+  }
+});
+
+// Get public key of a user
+app.get('/users/:id/public-key', authenticateJWT, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+
+    if (isNaN(userId)) {
+      return res.status(400).json({ error: 'bad_request', message: 'ID utilisateur invalide' });
+    }
+
+    const user = await User.findByPk(userId, {
+      attributes: ['id', 'email', 'publicKey']
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'not_found', message: 'Utilisateur introuvable' });
+    }
+
+    if (!user.publicKey) {
+      return res.status(404).json({ error: 'not_found', message: 'Clé publique non disponible' });
+    }
+
+    res.json({
+      userId: user.id,
+      email: user.email,
+      publicKey: user.publicKey
+    });
+  } catch (err) {
+    console.error('GET /users/:id/public-key failed:', err);
     res.status(500).json({ error: 'internal_error' });
   }
 });
@@ -488,11 +585,20 @@ app.get('/users/:id', authenticateJWT, async (req, res) => {
 // Send a friend request
 app.post('/friends/request', authenticateJWT, async (req, res) => {
   try {
+    console.log('👥 ===== POST /friends/request =====');
+    console.log('👥 req.user:', req.user);
+    console.log('👥 req.body:', req.body);
+
     const senderId = req.user.userId;
     const { receiverId, receiverEmail } = req.body || {};
 
+    console.log('👥 senderId:', senderId);
+    console.log('👥 receiverId:', receiverId, '(type:', typeof receiverId, ')');
+    console.log('👥 receiverEmail:', receiverEmail);
+
     // Validation - accept either receiverId or receiverEmail
     if (!receiverId && !receiverEmail) {
+      console.log('❌ Validation failed: ni receiverId ni receiverEmail fourni');
       return res.status(400).json({
         error: 'bad_request',
         message: 'receiverId ou receiverEmail requis'
@@ -917,7 +1023,7 @@ io.on('connection', (socket) => {
 async function start() {
   try {
     await sequelize.authenticate();
-    // Do not alter exiisting schema; ensure models are usable
+    // Do not alter existing schema; ensure models are usable
     await sequelize.sync({ alter: false });
     console.log('Database connected and models synced.');
 
