@@ -34,8 +34,8 @@ interface AppDao {
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
     fun getMessagesForConversation(conversationId: String): Flow<List<Message>>
 
-    /** Insère un nouveau message. */
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    /** Insère un nouveau message (remplace si existe déjà). */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertMessage(message: Message)
 
     /** Supprime tous les messages d'une conversation. */
