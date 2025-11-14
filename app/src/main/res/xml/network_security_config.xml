@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+    ⚠️ CONFIGURATION POUR DÉVELOPPEMENT UNIQUEMENT
+    HTTP autorisé car vous n'avez pas accès au serveur pour configurer HTTPS
+
+    SÉCURITÉ MAINTENUE :
+    - Le chiffrement E2EE protège vos messages même sur HTTP
+    - Les clés privées restent dans Android Keystore
+    - Le contenu est chiffré avant transmission
+    -->
+
+    <!-- Autoriser HTTP pour développement/testing -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Domaines spécifiques autorisés -->
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Émulateur Android -->
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <!-- Localhost -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <!-- Réseau local -->
+        <domain includeSubdomains="true">192.168.0.0</domain>
+        <domain includeSubdomains="true">192.168.1.0</domain>
+    </domain-config>
+</network-security-config>
+

@@ -1,10 +1,13 @@
 package com.example.testmessagesimple.utils
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -27,7 +30,7 @@ class CryptoManager(private val context: Context) {
         private const val KEY_SIZE = 2048
 
         // Prefs pour stocker la clé publique au format String
-        private const val PREFS_NAME = "crypto_prefs"
+        private const val PREFS_NAME = "crypto_prefs_encrypted"
         private const val KEY_PUBLIC_KEY_PREFIX = "public_key_string_"
         private const val KEY_CURRENT_USER_ID = "current_user_id"
     }
@@ -36,7 +39,24 @@ class CryptoManager(private val context: Context) {
         load(null)
     }
 
-    private val sharedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val sharedPrefs: SharedPreferences = try {
+        // Créer une MasterKey sécurisée
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+
+        // Utiliser EncryptedSharedPreferences pour les clés publiques
+        EncryptedSharedPreferences.create(
+            context,
+            PREFS_NAME,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ Erreur lors de la création des SharedPreferences chiffrées", e)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     // L'ID de l'utilisateur actuel pour isoler les clés
     private var currentUserId: Int? = null

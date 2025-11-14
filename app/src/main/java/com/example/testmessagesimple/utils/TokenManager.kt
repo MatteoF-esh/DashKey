@@ -2,12 +2,32 @@ package com.example.testmessagesimple.utils
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.example.testmessagesimple.data.UserInfo
 
 class TokenManager(context: Context) {
 
-    private val prefs: SharedPreferences =
+    private val prefs: SharedPreferences = try {
+        // Créer une MasterKey sécurisée pour le chiffrement
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+
+        // Utiliser EncryptedSharedPreferences pour chiffrer les données sensibles
+        EncryptedSharedPreferences.create(
+            context,
+            "auth_prefs_encrypted",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    } catch (e: Exception) {
+        Log.e("TokenManager", "❌ Erreur lors de la création des SharedPreferences chiffrées", e)
+        // Fallback sur SharedPreferences classiques (pour compatibilité)
         context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+    }
 
     companion object {
         private const val KEY_TOKEN = "jwt_token"

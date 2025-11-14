@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.util.Patterns
+import com.example.testmessagesimple.BuildConfig
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -43,6 +44,7 @@ import com.example.testmessagesimple.data.AuthRepository
 import com.example.testmessagesimple.data.UserInfo
 import com.example.testmessagesimple.ui.theme.TestMessageSimpleTheme
 import com.example.testmessagesimple.utils.CryptoManager
+import com.example.testmessagesimple.utils.SecurityUtils
 import com.example.testmessagesimple.utils.TokenManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -296,6 +298,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // 🔒 SÉCURITÉ : Vérification de l'environnement avant démarrage
+        performSecurityChecks()
+
         database = Room.databaseBuilder(
             applicationContext,
             AppDatabase::class.java,
@@ -305,6 +310,30 @@ class MainActivity : ComponentActivity() {
         setContent {
             TestMessageSimpleTheme {
                 AppShell(database.appDao(), authViewModel)
+            }
+        }
+    }
+
+    /**
+     * Effectue des vérifications de sécurité au démarrage de l'application
+     * En production, on peut bloquer l'app si l'environnement est compromis
+     */
+    private fun performSecurityChecks() {
+        if (BuildConfig.DEBUG) {
+            // En mode debug, on log juste les avertissements
+            val report = SecurityUtils.performSecurityCheck(this)
+            Log.d("MainActivity", "📊 Rapport de sécurité : $report")
+
+            if (report.threatLevel != com.example.testmessagesimple.utils.ThreatLevel.LOW) {
+                Log.w("MainActivity", "⚠️ Niveau de menace : ${report.threatLevel}")
+            }
+        } else {
+            // En mode release, on peut être plus strict
+            val isSecure = SecurityUtils.isSecureEnvironment(this)
+            if (!isSecure) {
+                Log.e("MainActivity", "🚨 ENVIRONNEMENT NON SÉCURISÉ DÉTECTÉ")
+                // En production, vous pouvez afficher un message et bloquer l'app :
+                // showSecurityWarningAndExit()
             }
         }
     }
